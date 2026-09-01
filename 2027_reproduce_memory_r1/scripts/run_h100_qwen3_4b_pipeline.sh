@@ -35,10 +35,11 @@ echo "  (working dir: $REPO_ROOT)"
 
 # ---------------------------------------------------------------------- environment
 
-# Force HuggingFace into offline mode so any accidental URL lookup falls back to local cache
-# instead of hanging on a socket timeout.
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+# By default we DON'T force HF offline mode — the H100 box has HF Hub access via the corp proxy,
+# so we let the pipeline fetch missing models on-demand. Override with `HF_HUB_OFFLINE=1
+# bash scripts/run_h100_qwen3_4b_pipeline.sh` to force offline mode.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 
 # Use ABSOLUTE paths for HF cache — relative './models' doesn't always resolve consistently
 # across sentence-transformers / transformers / huggingface_hub subprocesses.
@@ -172,8 +173,49 @@ link_cache_to_flat() {
     echo "  ↳ linked $cache_dir/snapshots/$snap_hash → $flat_dir"
 }
 
-QWEN_LOCAL="$(find_local_model "Qwen/Qwen3-4B-Instruct-2507" "qwen3-4b")"
-E5_LOCAL="$(find_local_model "intfloat/e5-small-v2" "e5-small-v2")"
+ensure_model() {
+    # Verify the model is present locally; download from HF Hub into a flat local dir if not.
+    # Flat dirs (regular files, no symlinks) are safe to copy between machines.
+    local repo_id="$1"
+    local flat_name="$2"
+    local flat_dir="models/$flat_name"
+
+    local resolved
+    resolved="$(find_local_model "$repo_id" "$flat_name")"
+    if [ -n "$resolved" ]; then
+        echo "$resolved"
+        return
+    fi
+
+    echo "  ↓ $repo_id not found locally — downloading to $flat_dir (HF_HUB_OFFLINE=$HF_HUB_OFFLINE)..." >&2
+    if ! $PY_RUN -c "
+from huggingface_hub import snapshot_download
+p = snapshot_download('$repo_id', local_dir='$flat_dir', local_dir_use_symlinks=False)
+print('downloaded to:', p)
+" >&2; then
+        echo "❌ HF snapshot_download failed for $repo_id. If your box has no internet, either:" >&2
+        echo "   - unset HF_HUB_OFFLINE=1 and retry (if HF is reachable via a proxy)" >&2
+        echo "   - download on an online machine and rsync ./models/$flat_name over" >&2
+        return
+    fi
+
+    resolved="$(find_local_model "$repo_id" "$flat_name")"
+    echo "$resolved"
+}
+
+# We need $PY_RUN set BEFORE ensure_model. Move the runner detection up.
+if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
+    PY_RUN="uv run --no-sync"
+elif [ -d .venv ]; then
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    PY_RUN="python"
+else
+    PY_RUN="python"
+fi
+
+QWEN_LOCAL="$(ensure_model "Qwen/Qwen3-4B-Instruct-2507" "qwen3-4b")"
+E5_LOCAL="$(ensure_model "intfloat/e5-small-v2" "e5-small-v2")"
 
 # If we resolved via a flat dir, mirror it into the HF cache tree via a symlink.
 if [ -n "$QWEN_LOCAL" ] && [ ! -f "models/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/localdir/config.json" ]; then
@@ -228,24 +270,15 @@ diagnose_snapshot() {
     echo "=========================================="
 }
 
-QWEN_LOCAL="$(resolve_local_snapshot "models/models--Qwen--Qwen3-4B-Instruct-2507")"
-E5_LOCAL="$(resolve_local_snapshot "models/models--intfloat--e5-small-v2")"
+# This second block was the old blocking check — now handled by ensure_model() above which
+# auto-downloads from HF Hub. Kept diagnose_snapshot as an available helper.
 if [ -z "$QWEN_LOCAL" ] || [ -z "$E5_LOCAL" ]; then
-    echo "❌ Couldn't resolve a valid local snapshot (missing config.json under snapshots/<hash>/)."
+    echo "❌ ensure_model failed — auto-download from HF Hub did not produce a valid model dir."
     echo "   Qwen3-4B → ${QWEN_LOCAL:-<not found>}"
     echo "   e5-small-v2 → ${E5_LOCAL:-<not found>}"
-
-    [ -z "$E5_LOCAL" ] && diagnose_snapshot "models/models--intfloat--e5-small-v2"
-    [ -z "$QWEN_LOCAL" ] && diagnose_snapshot "models/models--Qwen--Qwen3-4B-Instruct-2507"
-
-    echo
-    echo "  Common causes:"
-    echo "  1. rsync/scp didn't preserve symlinks → 'ls -la snapshots/<hash>/' shows red/broken links."
-    echo "     Fix: re-copy with 'rsync -avL src:./models/ ./models/' (dereferences symlinks)."
-    echo "  2. Downloaded with 'huggingface-cli download --local-dir X' → files under X, not snapshots/."
-    echo "     Fix: re-download without --local-dir; it produces the correct snapshots/ tree."
-    echo "  3. snapshots/<hash>/ is empty (interrupted download)."
-    echo "     Fix: re-download the model."
+    echo "   Set HF_HUB_OFFLINE=0 explicitly if the corp box needs it, or manually download:"
+    echo "     python -c \"from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-4B-Instruct-2507', local_dir='models/qwen3-4b', local_dir_use_symlinks=False)\""
+    echo "     python -c \"from huggingface_hub import snapshot_download; snapshot_download('intfloat/e5-small-v2', local_dir='models/e5-small-v2', local_dir_use_symlinks=False)\""
     exit 2
 fi
 echo "  ↳ resolved Qwen3-4B → $QWEN_LOCAL"
