@@ -134,3 +134,60 @@ class DenseRetriever:
         """
 
         return {sp: self.search_bank(bank, query, top_k_per_speaker, speaker=sp) for sp in bank.speakers()}
+
+    def search_by_speaker_batch(
+        self,
+        bank: "MemoryBank",
+        queries: list[str],
+        top_k_per_speaker: int,
+    ) -> list[dict[str, list["Retrieved"]]]:
+        """Vectorized ``search_by_speaker`` for a fixed bank + many queries.
+
+        The single-query API re-encodes the bank on every call — fine when the bank changes
+        turn-by-turn (Manager rollouts) but wasteful for Answer-Agent data construction where the
+        bank is built once and then queried by all ~150 questions in a dialogue. This method
+        encodes the bank ONCE per speaker and all queries ONCE as a batch, then does the sort
+        per (query, speaker) purely in NumPy. ~50-100× faster than looping ``search_by_speaker``.
+        """
+
+        speakers = bank.speakers()
+        if not queries:
+            return []
+
+        # Encode each speaker's bank ONCE (was ``len(queries)`` times before).
+        per_speaker_entries: dict[str, list["MemoryEntry"]] = {}
+        per_speaker_emb: dict[str, np.ndarray] = {}
+        for sp in speakers:
+            entries = bank.entries_of(sp)
+            per_speaker_entries[sp] = entries
+            per_speaker_emb[sp] = (
+                self.encode([e.text for e in entries], is_query=False)
+                if entries
+                else np.zeros((0, self.dim), dtype=np.float32)
+            )
+
+        # Encode all queries in one shot so sentence-transformers can batch the forward pass.
+        q_emb = self.encode(queries, is_query=True)  # shape: (n_queries, dim)
+
+        results: list[dict[str, list[Retrieved]]] = []
+        for qi in range(len(queries)):
+            per_q: dict[str, list[Retrieved]] = {}
+            for sp in speakers:
+                entries = per_speaker_entries[sp]
+                if not entries:
+                    per_q[sp] = []
+                    continue
+                sims = per_speaker_emb[sp] @ q_emb[qi]  # (n_entries,)
+                order = np.argsort(-sims)[:top_k_per_speaker]
+                per_q[sp] = [
+                    Retrieved(
+                        entry_id=entries[i].id,
+                        speaker=entries[i].speaker,
+                        text=entries[i].text,
+                        score=float(sims[i]),
+                        timestamp=entries[i].timestamp,
+                    )
+                    for i in order
+                ]
+            results.append(per_q)
+        return results

@@ -171,11 +171,17 @@ def build_answer_dataset(
             )
             logger.info("🗃️  bank built: {} memories across {} speakers",
                         len(bank), len(bank.speakers()))
-            logger.info("🔍 retrieving top-{}/speaker for {} questions...",
+            logger.info("🔍 retrieving top-{}/speaker for {} questions (batched)...",
                         top_k_per_speaker, len(dialogue.qa))
 
-            for qi, q in enumerate(dialogue.qa, 1):
-                retrieved = retriever.search_by_speaker(bank, q.question, top_k_per_speaker=top_k_per_speaker)
+            # Batched retrieval: encode bank once, encode all queries once, sort per-question in
+            # NumPy. Previously we called search_by_speaker inside the loop, which re-encoded the
+            # entire bank on every question (~150× redundant work for a 150-question dialogue).
+            all_retrieved = retriever.search_by_speaker_batch(
+                bank, [q.question for q in dialogue.qa], top_k_per_speaker=top_k_per_speaker
+            )
+
+            for qi, (q, retrieved) in enumerate(zip(dialogue.qa, all_retrieved, strict=True), 1):
                 mem_by_speaker: dict[str, list[dict[str, str]]] = {}
                 for sp, hits in retrieved.items():
                     mem_by_speaker[sp] = [
