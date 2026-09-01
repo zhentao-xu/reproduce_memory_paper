@@ -40,9 +40,12 @@ echo "  (working dir: $REPO_ROOT)"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 
-export HF_HOME="${HF_HOME:-./models}"
-export HF_HUB_CACHE="${HF_HUB_CACHE:-./models}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-./models}"
+# Use ABSOLUTE paths for HF cache — relative './models' doesn't always resolve consistently
+# across sentence-transformers / transformers / huggingface_hub subprocesses.
+export HF_HOME="${HF_HOME:-$REPO_ROOT/models}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$REPO_ROOT/models}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$REPO_ROOT/models}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$REPO_ROOT/models}"  # legacy name
 export PYTHONUNBUFFERED=1
 
 # Optional wandb — set WANDB_MODE=offline for an air-gapped run.
@@ -81,15 +84,42 @@ echo "[0/6] Offline sanity checks..."
 fail_missing "data/raw/locomo/locomo10.json" \
     "LoCoMo is checked into git; if you're missing it, git-pull or copy from an online box."
 
-fail_missing "models/models--Qwen--Qwen3-4B-Instruct-2507" \
-    "Download Qwen3-4B on an online box:
-       HF_HOME=./models huggingface-cli download Qwen/Qwen3-4B-Instruct-2507
-     then scp/rsync ./models/models--Qwen--Qwen3-4B-Instruct-2507 to this host."
+check_hf_cache() {
+    # HF cache format: models--<org>--<model>/snapshots/<hash>/config.json (+ weights).
+    # Missing snapshots/ typically means the user ran ``huggingface-cli download --local-dir``
+    # (which writes flat files instead of the cache-format tree). Loading such a dir requires
+    # the local path directly, not the HF repo id.
+    local model_dir="$1"
+    local repo_id="$2"
+    if [ ! -d "$model_dir" ]; then
+        echo
+        echo "❌ Missing prerequisite: $model_dir"
+        echo "   Download $repo_id on an online box:"
+        echo "     HF_HOME=\$REPO_ROOT/models huggingface-cli download $repo_id"
+        echo "   then scp/rsync the whole $model_dir to this host."
+        exit 2
+    fi
+    if [ ! -d "$model_dir/snapshots" ]; then
+        echo
+        echo "❌ Corrupt HF cache: $model_dir has no snapshots/ subdir."
+        echo "   Expected layout: $model_dir/snapshots/<hash>/config.json"
+        echo "   Contents found:"
+        ls -la "$model_dir" | head -10
+        echo "   Re-download on an online box with:"
+        echo "     HF_HOME=\$REPO_ROOT/models huggingface-cli download $repo_id"
+        exit 2
+    fi
+    local snapshot_count
+    snapshot_count=$(ls -1 "$model_dir/snapshots" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$snapshot_count" -eq 0 ]; then
+        echo "❌ $model_dir/snapshots/ is empty. Re-download the model."
+        exit 2
+    fi
+    echo "✓ $model_dir (with $snapshot_count snapshot(s))"
+}
 
-fail_missing "models/models--intfloat--e5-small-v2" \
-    "Download e5-small-v2 on an online box:
-       HF_HOME=./models huggingface-cli download intfloat/e5-small-v2
-     then scp/rsync ./models/models--intfloat--e5-small-v2 to this host."
+check_hf_cache "models/models--Qwen--Qwen3-4B-Instruct-2507" "Qwen/Qwen3-4B-Instruct-2507"
+check_hf_cache "models/models--intfloat--e5-small-v2" "intfloat/e5-small-v2"
 
 # Python runner: prefer uv if installed, otherwise fall back to plain python. This lets the
 # script work both on a uv-managed box and on a corp box where uv isn't available and packages
@@ -136,6 +166,8 @@ fi
 echo "✓ memory_r1 package importable"
 
 echo "  (offline mode — HF_HUB_OFFLINE=$HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE=$TRANSFORMERS_OFFLINE)"
+echo "  HF_HOME=$HF_HOME"
+echo "  HF_HUB_CACHE=$HF_HUB_CACHE"
 
 if [ "$EVAL_ONLY" = "true" ]; then
     echo "[eval-only] Skipping data prep + training. Jumping to evaluation."
