@@ -195,10 +195,15 @@ else
     fi
 
     # Turn raw LoCoMo conversations into training tuples for the Answer Agent.
-    # Each tuple = (question, retrieved_top_60_memories, gold_answer). "top-60"
-    # means top-30 memories per speaker (there are always 2 speakers in a LoCoMo
-    # dialogue), retrieved by e5-small-v2 cosine similarity. The Answer Agent
-    # is trained to produce the gold answer given those 60 memories as context.
+    # Each tuple = (question, retrieved_top_30_memories, gold_answer). "top-30"
+    # means top-15 memories per speaker (there are always 2 speakers in a LoCoMo
+    # dialogue), retrieved by e5-small-v2 cosine similarity. Chunking mode is
+    # ``turn_pair`` — each memory entry is a consecutive-turn pair (Q + response
+    # together) via a stride-1 sliding window so both A→B and B→A adjacencies
+    # are indexed. The Answer Agent is trained to produce the gold answer given
+    # those 30 pairs as context. Must match training/eval configs'
+    # ``top_k_per_speaker: 15`` — this value is baked into ``answer_train.jsonl``
+    # at prep time, not read from YAML.
     echo "[2/6] Answer Agent training tuples (Algorithm 2)"
     if [ -f data/processed/answer_train.jsonl ]; then
         echo "  ✓ data/processed/answer_train.jsonl present — skipping."
@@ -208,7 +213,8 @@ else
             --out data/processed/answer_train.jsonl \
             --extractor heuristic \
             --encoder "$E5_LOCAL" \
-            --top-k-per-speaker 30
+            --chunking turn_pair \
+            --top-k-per-speaker 15
     fi
 
     # ---------------------------------------------------------------------- 3. Stage A
