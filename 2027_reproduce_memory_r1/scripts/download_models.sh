@@ -51,9 +51,20 @@ download_one() {
         return
     fi
     echo "  ↓ downloading $repo_id → $flat_dir"
+    # Skip redundant weight formats (ONNX / TF / OpenVINO / legacy pytorch_model.bin).
+    # safetensors is the format transformers + sentence-transformers load by default.
     $PY - <<PYEOF
 from huggingface_hub import snapshot_download
-p = snapshot_download("$repo_id", local_dir="$flat_dir")
+ignore = [
+    "*.onnx",
+    "onnx/*", "onnx_*",
+    "openvino/*", "openvino_*",
+    "tf_model.h5",
+    "flax_model.msgpack",
+    "pytorch_model.bin",
+    "pytorch_model.bin.index.json",
+]
+p = snapshot_download("$repo_id", local_dir="$flat_dir", ignore_patterns=ignore)
 print(f"  ✓ done: {p}")
 PYEOF
 }
