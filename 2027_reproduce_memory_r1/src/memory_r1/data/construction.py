@@ -139,6 +139,7 @@ def build_answer_dataset(
     extractor_backend: LLMBackend | None = None,
     retriever: DenseRetriever | None = None,
     max_dialogues: int | None = None,
+    chunking: str = "fact",
 ) -> None:
     """Build (question, retrieved_60, gold) tuples for the Answer Agent.
 
@@ -146,7 +147,23 @@ def build_answer_dataset(
     bank that gets queried. If ``None``, we bypass the Manager and add every extracted fact
     directly (i.e. an "always ADD" baseline manager). This is fine for pre-RL data construction —
     the Answer Agent is trained on retrieval-over-facts, not on Manager quality.
+
+    ``chunking`` controls how utterances become memory entries:
+
+    - ``"fact"`` (default, paper): run the fact extractor per turn; each atomic fact is one
+      memory entry. Faithful to Algorithm 2 but Q and A are frequently split across entries,
+      so retrieval can surface one without the other.
+    - ``"turn_pair"``: skip the extractor and Manager entirely. Walk the dialogue as
+      OVERLAPPING pairs of consecutive turns (sliding window, stride 1) so both the A→B and
+      B→A adjacencies are indexed; each pair becomes ONE memory entry with text
+      ``"{sp_a}: {txt_a}\\n{sp_b}: {txt_b}"``. The pair is registered under BOTH speakers'
+      buckets so per-speaker top-K retrieval finds it regardless of who opened the exchange.
+      Useful for Answer-Agent GRPO/DPO training where you want the retrieved context to keep
+      question+response coherent.
     """
+
+    if chunking not in {"fact", "turn_pair"}:
+        raise ValueError(f"chunking must be 'fact' or 'turn_pair', got {chunking!r}")
 
     loader = LoCoMoLoader(locomo_path, exclude_adversarial=True)
     dialogues = loader.dialogues if max_dialogues is None else loader.dialogues[:max_dialogues]
@@ -154,8 +171,8 @@ def build_answer_dataset(
     if retriever is None:
         retriever = DenseRetriever()
 
-    extractor = _make_extractor(extractor_backend)
-    manager = MemoryManager(manager_backend, retriever=retriever) if manager_backend else None
+    extractor = _make_extractor(extractor_backend) if chunking == "fact" else None
+    manager = MemoryManager(manager_backend, retriever=retriever) if (chunking == "fact" and manager_backend) else None
 
     from memory_r1.utils import logger
 
@@ -164,11 +181,14 @@ def build_answer_dataset(
 
     with out_path.open("w", encoding="utf-8") as f:
         for di, dialogue in enumerate(dialogues, 1):
-            logger.info("📚 dialogue {}/{} id={} — building bank from {} turns",
-                        di, len(dialogues), dialogue.dialogue_id, len(dialogue.turns))
-            bank = _construct_bank_for_dialogue(
-                dialogue=dialogue, extractor=extractor, manager=manager
-            )
+            logger.info("📚 dialogue {}/{} id={} chunking={} — building bank from {} turns",
+                        di, len(dialogues), dialogue.dialogue_id, chunking, len(dialogue.turns))
+            if chunking == "turn_pair":
+                bank = _construct_bank_pair_chunks(dialogue)
+            else:
+                bank = _construct_bank_for_dialogue(
+                    dialogue=dialogue, extractor=extractor, manager=manager
+                )
             logger.info("🗃️  bank built: {} memories across {} speakers",
                         len(bank), len(bank.speakers()))
             logger.info("🔍 retrieving top-{}/speaker for {} questions (batched)...",
@@ -232,6 +252,33 @@ def _construct_bank_for_dialogue(
                 bank.add(turn.speaker, fact, timestamp=turn.timestamp)
         else:
             manager.step(bank, speaker=turn.speaker, facts=facts, turn_timestamp=turn.timestamp)
+    return bank
+
+
+def _construct_bank_pair_chunks(dialogue: LoCoMoDialogue) -> MemoryBank:
+    """Chunk the dialogue as OVERLAPPING pairs of consecutive turns (sliding window, stride 1).
+
+    For turns ``[t0, t1, t2, t3, ...]`` we emit entries for ``(t0,t1)``, ``(t1,t2)``,
+    ``(t2,t3)``, ... — so both the A→B and the B→A adjacencies are indexed. Each pair becomes
+    one memory entry with the two utterances concatenated (speaker-prefixed) and is registered
+    under BOTH speakers' buckets so per-speaker top-K retrieval finds it regardless of which
+    speaker opened the pair. A single-turn dialogue is stored as a lone singleton.
+    """
+
+    bank = MemoryBank()
+    turns = dialogue.turns
+    if not turns:
+        return bank
+    if len(turns) == 1:
+        a = turns[0]
+        bank.add(a.speaker, f"{a.speaker}: {a.text}", timestamp=a.timestamp)
+        return bank
+    for i in range(len(turns) - 1):
+        a, b = turns[i], turns[i + 1]
+        text = f"{a.speaker}: {a.text}\n{b.speaker}: {b.text}"
+        ts = a.timestamp
+        for sp in {a.speaker, b.speaker}:
+            bank.add(sp, text, timestamp=ts)
     return bank
 
 

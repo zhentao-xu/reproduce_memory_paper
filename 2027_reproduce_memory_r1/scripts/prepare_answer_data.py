@@ -30,6 +30,14 @@ def main() -> None:
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--max-dialogues", default=None, type=int)
     ap.add_argument(
+        "--chunking",
+        default="fact",
+        choices=["fact", "turn_pair"],
+        help="'fact' = per-turn extracted facts (paper). 'turn_pair' = one memory entry per "
+             "overlapping consecutive-turn pair (sliding window, stride 1) so both A→B and "
+             "B→A adjacencies are indexed — keeps Q+A together for GRPO/DPO.",
+    )
+    ap.add_argument(
         "--encoder",
         default="sentence-transformers/all-MiniLM-L6-v2",
         help="Embedding model. Try 'intfloat/e5-large-v2' for higher retrieval recall.",
@@ -38,8 +46,8 @@ def main() -> None:
 
     init_run_logger("prepare_answer_data")
     logger.info(
-        "⚙️  locomo={} out={} extractor={} encoder={} top_k_per_speaker={} max_dialogues={}",
-        args.locomo, args.out, args.extractor, args.encoder,
+        "⚙️  locomo={} out={} extractor={} encoder={} chunking={} top_k_per_speaker={} max_dialogues={}",
+        args.locomo, args.out, args.extractor, args.encoder, args.chunking,
         args.top_k_per_speaker, args.max_dialogues,
     )
 
@@ -69,6 +77,7 @@ def main() -> None:
         extractor_backend=extractor_backend,
         retriever=retriever,
         max_dialogues=args.max_dialogues,
+        chunking=args.chunking,
     )
 
 

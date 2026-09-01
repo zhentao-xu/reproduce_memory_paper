@@ -48,6 +48,11 @@ def build_answer_data(
     out_path: Path = typer.Option(Path("data/processed/answer_train.jsonl")),
     top_k_per_speaker: int = typer.Option(30, help="Top-K per participant (60 total)."),
     max_dialogues: int | None = typer.Option(None),
+    chunking: str = typer.Option(
+        "fact",
+        help="'fact' = per-turn extracted facts (paper). 'turn_pair' = overlapping consecutive-"
+             "turn pair chunks so Q and its response stay in the same retrievable unit.",
+    ),
 ) -> None:
     """Algorithm 2: build (question, 60 retrieved memories, gold) tuples for the Answer Agent."""
     from memory_r1.data.construction import build_answer_dataset
@@ -57,6 +62,7 @@ def build_answer_data(
         out_path=out_path,
         top_k_per_speaker=top_k_per_speaker,
         max_dialogues=max_dialogues,
+        chunking=chunking,
     )
 
 
