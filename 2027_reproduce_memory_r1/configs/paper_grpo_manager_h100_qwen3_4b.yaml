@@ -19,7 +19,7 @@ optim:
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
   total_batch_size: 256
-  micro_batch_size_per_gpu: 16
+  micro_batch_size_per_gpu: 8
   clip_range: 0.2
   kl_coef: 0.02
   max_grad_norm: 1.0
