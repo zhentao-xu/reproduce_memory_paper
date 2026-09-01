@@ -202,9 +202,6 @@ class GRPOManagerTrainer:
         if attn_impl is not None:
             load_kwargs["attn_implementation"] = attn_impl
         self.model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
-        self.ref_model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
-        for p in self.ref_model.parameters():
-            p.requires_grad = False
 
         if cfg.model.use_peft:
             from peft import LoraConfig, get_peft_model
@@ -218,17 +215,28 @@ class GRPOManagerTrainer:
             )
             self.model = get_peft_model(self.model, lora)
 
-        self.model.to(self.device)
-        self.ref_model.to(self.device)
-        self.ref_model.eval()
+        # See grpo_answer.py for the rationale: with LoRA, π_ref == actor with adapter disabled,
+        # so we skip the second model copy entirely and save ~8 GB (4B) / ~16 GB (8B) of VRAM.
+        if cfg.model.use_peft:
+            self.ref_model = None
+            logger.info("♻️  reference model = adapter-disabled actor (saves ~{} GB VRAM)",
+                        int(sum(p.numel() for p in self.model.parameters()) * 2 / 1e9))
+        else:
+            self.ref_model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
+            for p in self.ref_model.parameters():
+                p.requires_grad = False
 
-        # Gradient checkpointing on CUDA — see grpo_answer.py for the rationale (activation
-        # memory dominates on H100 with G=8 candidates × ~4k tokens × 36 layers).
-        if str(self.device).startswith("cuda"):
+        self.model.to(self.device)
+        if self.ref_model is not None:
+            self.ref_model.to(self.device).eval()
+
+        # Gradient checkpointing is now a config knob (see grpo_answer.py). Default off since
+        # LoRA + G=16 sits at ~30 % of an 80 GB H100 without checkpointing.
+        if cfg.model.use_gradient_checkpointing:
             if hasattr(self.model, "enable_input_require_grads"):
-                self.model.enable_input_require_grads()  # PEFT + ckpt hook
+                self.model.enable_input_require_grads()
             self.model.gradient_checkpointing_enable()
-            logger.info("🪶 gradient checkpointing enabled on actor (CUDA)")
+            logger.info("🪶 gradient checkpointing enabled on actor")
 
         self.optim = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad], lr=cfg.optim.actor_lr, betas=(0.9, 0.95)
@@ -286,6 +294,17 @@ class GRPOManagerTrainer:
             responses.append(self.tokenizer.decode(completion, skip_special_tokens=True).strip())
         return responses
 
+    def _ref_forward_batch(self, prompt: str, responses: list[str]):
+        """Reference-policy log-probs — auto-routes to disable_adapter() when ref_model is None."""
+        if self.ref_model is None:
+            with self.model.disable_adapter():
+                return _response_logprobs_batch(
+                    self.model, self.tokenizer, prompt, responses, self.device
+                )
+        return _response_logprobs_batch(
+            self.ref_model, self.tokenizer, prompt, responses, self.device
+        )
+
     def _grpo_step(self, prompt: str, responses: list[str], rewards: list[float]) -> dict[str, float]:
         """Take one gradient step on Eq. (3).
 
@@ -312,9 +331,7 @@ class GRPOManagerTrainer:
                 self.model, self.tokenizer, prompt, batch_resps, self.device
             )
             with torch.no_grad():
-                old_lp, _ = _response_logprobs_batch(
-                    self.ref_model, self.tokenizer, prompt, batch_resps, self.device
-                )
+                old_lp, _ = self._ref_forward_batch(prompt, batch_resps)
 
             ratio = torch.exp(new_lp - old_lp).clamp(max=10.0)
             unclipped = ratio * batch_adv

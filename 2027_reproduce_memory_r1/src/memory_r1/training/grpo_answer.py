@@ -78,9 +78,6 @@ class GRPOAnswerTrainer:
         if attn_impl is not None:
             load_kwargs["attn_implementation"] = attn_impl
         self.model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
-        self.ref_model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
-        for p in self.ref_model.parameters():
-            p.requires_grad = False
 
         if cfg.model.use_peft:
             from peft import LoraConfig, get_peft_model
@@ -94,21 +91,33 @@ class GRPOAnswerTrainer:
             )
             self.model = get_peft_model(self.model, lora)
 
-        self.model.to(self.device)
-        self.ref_model.to(self.device).eval()
+        # Reference model: with LoRA, the "reference" IS the base model with the adapter
+        # temporarily disabled — same weights, no need for a second copy in VRAM. Saves ~8 GB
+        # on 4B, ~16 GB on 8B. See `_ref_context()` for the disable_adapter() trick used at
+        # log-prob-computation time. For full-param FT we still keep a separate ref_model copy.
+        if cfg.model.use_peft:
+            self.ref_model = None
+            logger.info("♻️  reference model = adapter-disabled actor (saves ~{} GB VRAM)",
+                        int(sum(p.numel() for p in self.model.parameters()) * 2 / 1e9))
+        else:
+            self.ref_model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
+            for p in self.ref_model.parameters():
+                p.requires_grad = False
 
-        # On CUDA (single-GPU H100) the biggest activation cost is Q, K, V and MLP
-        # intermediates for a ~4k-token sequence × 36 layers. Gradient checkpointing
-        # trades ~30% compute for ~5-10× activation-memory reduction, which is what
-        # lets G=8 candidates fit on 80 GB. Skipped on MPS where memory is unified
-        # and the kernel path has been less battle-tested.
-        if str(self.device).startswith("cuda"):
+        self.model.to(self.device)
+        if self.ref_model is not None:
+            self.ref_model.to(self.device).eval()
+
+        # Gradient checkpointing is now a config knob. It's needed for full-param FT or when
+        # G/µ scale up past VRAM; wasteful when VRAM is comfortable (H100 + LoRA at G=16 sits at
+        # ~30 % VRAM with this off, and disabling gets ~30 % more throughput).
+        if cfg.model.use_gradient_checkpointing:
             if hasattr(self.model, "enable_input_require_grads"):
                 # PEFT + gradient checkpointing needs this to keep grads flowing through
                 # the frozen base params into the LoRA adapters.
                 self.model.enable_input_require_grads()
             self.model.gradient_checkpointing_enable()
-            logger.info("🪶 gradient checkpointing enabled on actor (CUDA)")
+            logger.info("🪶 gradient checkpointing enabled on actor")
 
         self.optim = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad], lr=cfg.optim.actor_lr, betas=(0.9, 0.95)
@@ -167,6 +176,19 @@ class GRPOAnswerTrainer:
             responses.append(self.tokenizer.decode(completion, skip_special_tokens=True).strip())
         return responses
 
+    def _ref_forward_batch(self, prompt: str, responses: list[str]):
+        """Reference-policy log-probs. Same signature as ``_response_logprobs_batch`` but
+        automatically routes to the LoRA-disable trick when we don't keep a separate ref_model."""
+        if self.ref_model is None:
+            # actor with LoRA disabled == frozen base model, i.e. π_ref.
+            with self.model.disable_adapter():
+                return _response_logprobs_batch(
+                    self.model, self.tokenizer, prompt, responses, self.device
+                )
+        return _response_logprobs_batch(
+            self.ref_model, self.tokenizer, prompt, responses, self.device
+        )
+
     def _step(self, prompt: str, responses: list[str], rewards: list[float]) -> dict[str, float]:
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         adv = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-6)
@@ -190,9 +212,7 @@ class GRPOAnswerTrainer:
                 self.model, self.tokenizer, prompt, batch_resps, self.device
             )
             with torch.no_grad():
-                old_lp, _ = _response_logprobs_batch(
-                    self.ref_model, self.tokenizer, prompt, batch_resps, self.device
-                )
+                old_lp, _ = self._ref_forward_batch(prompt, batch_resps)
 
             ratio = torch.exp(new_lp - old_lp).clamp(max=10.0)
             unclipped = ratio * batch_adv
