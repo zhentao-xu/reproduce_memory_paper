@@ -66,9 +66,14 @@ dev = [
 [project.scripts]
 memory-r1 = "memory_r1.cli:app"
 
+# setuptools is universally available on any PyPI mirror. We were using uv_build originally,
+# but that requires uv_build>=0.11.32 which isn't on every corp mirror.
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12.0"]
-build-backend = "uv_build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.uv]
 package = true
