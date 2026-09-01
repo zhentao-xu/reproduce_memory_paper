@@ -103,11 +103,30 @@ def main() -> int:
         print(f"❌ transformers / torch not installed: {e}")
         return 1
 
-    from memory_r1.utils import resolve_attn_impl, resolve_device, resolve_dtype
+    # Small standalone helpers — inlined so this diagnostic works even before
+    # `pip install -e .` (i.e., when the memory_r1 package isn't yet installed).
+    # Behavior must stay in sync with src/memory_r1/utils/device.py.
+    def _resolve_device() -> str:
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
 
-    device = args.device or resolve_device()
-    dtype = resolve_dtype(cfg.get("torch_dtype", "bfloat16"), device)
-    attn_impl = resolve_attn_impl(device)
+    def _resolve_dtype(name: str, dev: str) -> "torch.dtype":
+        m = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+        dt = m.get(name, torch.bfloat16)
+        if dev == "cpu" and dt == torch.bfloat16:
+            return torch.float32  # bf16 on CPU is ~10× slower than fp32
+        return dt
+
+    def _resolve_attn_impl(dev: str) -> "str | None":
+        # MPS SDPA silently NaNs during long bf16 decode → force eager on MPS.
+        return "eager" if dev == "mps" else None
+
+    device = args.device or _resolve_device()
+    dtype = _resolve_dtype(cfg.get("torch_dtype", "bfloat16"), device)
+    attn_impl = _resolve_attn_impl(device)
     print(f"→ device={device}, dtype={dtype}, attn_impl={attn_impl or 'default'}")
 
     print("→ loading tokenizer …")
