@@ -118,8 +118,70 @@ check_hf_cache() {
     echo "✓ $model_dir (with $snapshot_count snapshot(s))"
 }
 
-check_hf_cache "models/models--Qwen--Qwen3-4B-Instruct-2507" "Qwen/Qwen3-4B-Instruct-2507"
-check_hf_cache "models/models--intfloat--e5-small-v2" "intfloat/e5-small-v2"
+# Prefer a flat local-dir layout if present (from `snapshot_download(local_dir=..., local_dir_use_symlinks=False)`),
+# fall back to the HF cache layout. Both are common depending on how the user downloaded.
+find_local_model() {
+    local repo_id="$1"     # e.g. Qwen/Qwen3-4B-Instruct-2507
+    local flat_name="$2"   # e.g. qwen3-4b — where the user might have unpacked a flat local_dir download
+    # Preferred: flat local_dir with an obvious name
+    if [ -f "models/$flat_name/config.json" ]; then
+        (cd "models/$flat_name" && pwd)
+        return
+    fi
+    # Fallback 1: HF cache layout (models--<org>--<model>/snapshots/<hash>/config.json)
+    local cache_dir_name="models--$(echo "$repo_id" | tr '/' '-' | sed 's/-/--/')"
+    local cache_dir="models/$cache_dir_name"
+    if [ -d "$cache_dir/snapshots" ]; then
+        local snap_hash
+        snap_hash="$(cat "$cache_dir/refs/main" 2>/dev/null || ls -1 "$cache_dir/snapshots" 2>/dev/null | head -1)"
+        if [ -n "$snap_hash" ] && [ -f "$cache_dir/snapshots/$snap_hash/config.json" ]; then
+            (cd "$cache_dir/snapshots/$snap_hash" && pwd)
+            return
+        fi
+    fi
+    # Fallback 2: flat under the org--name path without --
+    if [ -f "models/$(basename "$repo_id")/config.json" ]; then
+        (cd "models/$(basename "$repo_id")" && pwd)
+        return
+    fi
+    echo ""
+}
+
+# If a flat model dir is present but the HF cache-format tree is broken/empty, create a
+# symlink so both layouts work. This lets sentence-transformers / transformers find the model
+# via the HF repo id AND via the direct path.
+link_cache_to_flat() {
+    local flat_dir="$1"                        # absolute path to the flat local dir
+    local repo_id="$2"                         # e.g. intfloat/e5-small-v2
+    local cache_name="models--$(echo "$repo_id" | tr '/' '-' | sed 's|-\([^-]\+\)$|--\1|')"
+    # Note the sed above only replaces the LAST '-' — e.g.
+    #   intfloat/e5-small-v2 → models--intfloat--e5-small-v2 (wrong, e5 has 3 dashes)
+    # so we build it manually instead:
+    local org="${repo_id%%/*}"
+    local name="${repo_id#*/}"
+    cache_name="models--${org}--${name}"
+    local cache_dir="models/$cache_name"
+    local snap_hash="localdir"
+    local snap_dir="$cache_dir/snapshots/$snap_hash"
+
+    mkdir -p "$cache_dir/refs" "$cache_dir/snapshots" "$cache_dir/blobs"
+    echo "$snap_hash" > "$cache_dir/refs/main"
+    # Nuke any dangling empty snapshot dir and point ours at the flat local dir.
+    rm -rf "$snap_dir"
+    ln -sfn "$flat_dir" "$snap_dir"
+    echo "  ↳ linked $cache_dir/snapshots/$snap_hash → $flat_dir"
+}
+
+QWEN_LOCAL="$(find_local_model "Qwen/Qwen3-4B-Instruct-2507" "qwen3-4b")"
+E5_LOCAL="$(find_local_model "intfloat/e5-small-v2" "e5-small-v2")"
+
+# If we resolved via a flat dir, mirror it into the HF cache tree via a symlink.
+if [ -n "$QWEN_LOCAL" ] && [ ! -f "models/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/localdir/config.json" ]; then
+    link_cache_to_flat "$QWEN_LOCAL" "Qwen/Qwen3-4B-Instruct-2507"
+fi
+if [ -n "$E5_LOCAL" ] && [ ! -f "models/models--intfloat--e5-small-v2/snapshots/localdir/config.json" ]; then
+    link_cache_to_flat "$E5_LOCAL" "intfloat/e5-small-v2"
+fi
 
 # Some corp environments break HF's cache-id resolution (e.g. broken symlinks after rsync,
 # or an older huggingface_hub that misreads HF_HUB_CACHE). To dodge that entirely we resolve
