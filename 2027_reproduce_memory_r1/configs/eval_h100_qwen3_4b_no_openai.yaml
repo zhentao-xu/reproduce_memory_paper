@@ -1,0 +1,31 @@
+# End-to-end evaluation on LoCoMo — open-source only (no OpenAI API).
+# Uses Qwen3-4B-Instruct-2507 for both the Answer Agent and the fact extractor.
+# LLM-as-a-Judge (J metric) is disabled — reports F1, BLEU-1, EM only.
+# Point checkpoints at outputs/checkpoints/paper_grpo_{answer,manager}_qwen3_4b/step_200.
+
+benchmark: locomo
+data_path: data/raw/locomo/locomo10.json
+
+manager_checkpoint: outputs/checkpoints/paper_grpo_manager_qwen3_4b/step_200
+answer_checkpoint: outputs/checkpoints/paper_grpo_answer_qwen3_4b/step_200
+
+# Local HuggingFace extractor — same Qwen3-4B for fact extraction.
+# Slower than GPT-4o-mini but self-contained. Set to ``openai`` + fill in OPENAI_API_KEY if
+# you get API access later.
+extractor_backend: hf
+extractor_model: Qwen/Qwen3-4B-Instruct-2507
+
+# LLM-as-a-Judge model — only used when use_judge is true. GPT-4o-mini by default; without OpenAI
+# access, set use_judge=false (see below).
+judge_model: gpt-4o-mini
+use_judge: false
+
+# Paper's retrieval budget.
+top_k_per_speaker: 30
+top_k_context_manager: 10
+
+dtype: bfloat16
+max_new_tokens_manager: 2048
+max_new_tokens_answer: 512
+
+output_dir: outputs/predictions_qwen3_4b_no_openai
