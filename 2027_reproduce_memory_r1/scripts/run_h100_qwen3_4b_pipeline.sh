@@ -27,6 +27,12 @@
 
 set -euo pipefail
 
+# Always run from the repo root, regardless of where the user invoked the script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+echo "  (working dir: $REPO_ROOT)"
+
 # ---------------------------------------------------------------------- environment
 
 # Force HuggingFace into offline mode so any accidental URL lookup falls back to local cache
