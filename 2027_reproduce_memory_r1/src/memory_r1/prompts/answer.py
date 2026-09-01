@@ -16,6 +16,7 @@ module attribute in a config.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Iterable, Mapping
 
 
@@ -82,18 +83,37 @@ ANSWER_AGENT_SYSTEM = ANSWER_AGENT_SYSTEM_FOCUSED
 # --------------------------------------------------------------------------- helpers
 
 
+_TS_FMT = "%I:%M %p on %d %B, %Y"  # e.g. "1:56 pm on 8 May, 2023"
+
+
+def _parse_ts(ts: str) -> datetime:
+    # Unparseable / missing timestamps sink to the end so real sessions stay ordered.
+    try:
+        return datetime.strptime(ts, _TS_FMT)
+    except ValueError:
+        return datetime.max
+
+
 def _format_speaker_memories(name: str, memories: Iterable[Mapping[str, str]]) -> str:
     """Format one speaker's memories as bulleted timestamped lines.
 
+    Sorted chronologically by timestamp and partitioned by session (a blank line separates
+    distinct timestamps), so the model can read the conversation as a coherent timeline.
     Each memory is expected to have at least ``text``; ``timestamp`` and ``speaker`` are optional.
     """
 
+    sorted_mems = sorted(memories, key=lambda m: _parse_ts(str(m.get("timestamp", "")).strip()))
+
     lines = [f"Memories for user {name}:"]
-    for mem in memories:
+    last_ts: str | None = None
+    for mem in sorted_mems:
         text = str(mem.get("text", "")).strip()
         if not text:
             continue
         ts = str(mem.get("timestamp", "")).strip()
+        if last_ts is not None and ts != last_ts:
+            lines.append("")
+        last_ts = ts
         prefix = f"- {ts}: " if ts else "- "
         lines.append(f"{prefix}{text}")
     return "\n".join(lines)
