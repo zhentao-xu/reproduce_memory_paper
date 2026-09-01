@@ -15,12 +15,12 @@ model:
   peft_r: 16
   peft_alpha: 32
   peft_dropout: 0.05
-  use_gradient_checkpointing: true  # required at G=24 / µ=8 on 4B; 30 % compute for OOM safety
+  use_gradient_checkpointing: true  # required at G=32 / µ=8 on 4B; 30 % compute for OOM safety
 
 optim:
   actor_lr: 1.0e-6          # paper Appendix D
   critic_lr: 1.0e-5         # (unused for GRPO)
-  total_batch_size: 256     # ⇑ from paper 128 to raise examples/step (was 16 at G=16, now 10 at G=24)
+  total_batch_size: 256     # ⇑ from paper 128 to raise examples/step (was 16 at G=16, now 8 at G=32)
   micro_batch_size_per_gpu: 8
   ppo_epochs: 4
   clip_range: 0.2
@@ -29,7 +29,7 @@ optim:
 
 rl:
   algorithm: grpo
-  group_size: 24  # ⇑ from paper 8 for more reward variance per group
+  group_size: 32  # ⇑ from paper 8 for more reward variance per group
   grpo_beta: 0.04
   train_temperature: 1.2    # ⇑ from paper's 1.0 + top_p 0.95 for candidate diversity
   train_top_p: 0.95

@@ -14,7 +14,7 @@ model:
   peft_r: 16
   peft_alpha: 32
   peft_dropout: 0.05
-  use_gradient_checkpointing: true  # required at G=24 / µ=8 on 4B; 30 % compute for OOM safety
+  use_gradient_checkpointing: true  # required at G=32 / µ=8 on 4B; 30 % compute for OOM safety
 
 optim:
   actor_lr: 1.0e-6
@@ -27,7 +27,7 @@ optim:
 
 rl:
   algorithm: grpo
-  group_size: 24            # ⇑ from paper 8 for more reward variance per group
+  group_size: 32            # ⇑ from paper 8 for more reward variance per group
   grpo_beta: 0.04
   train_temperature: 1.2
   train_top_p: 0.95
