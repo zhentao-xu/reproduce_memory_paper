@@ -31,8 +31,8 @@ rl:
   algorithm: grpo
   group_size: 8             # paper G
   grpo_beta: 0.04
-  train_temperature: 1.0    # paper's rollout temp (not the MPS 1.5 hack)
-  train_top_p: 1.0
+  train_temperature: 1.2    # ⇑ from paper's 1.0 + top_p 0.95 for candidate diversity
+  train_top_p: 0.95
   train_top_k: 0
   train_repetition_penalty: 1.0
   eval_temperature: 0.0

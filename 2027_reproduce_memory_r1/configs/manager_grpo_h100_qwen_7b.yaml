@@ -28,7 +28,7 @@ rl:
   algorithm: grpo
   group_size: 8
   grpo_beta: 0.04
-  train_temperature: 1.0
+  train_temperature: 1.2
   eval_temperature: 0.0
   max_prompt_length: 4096
   max_response_length: 2048

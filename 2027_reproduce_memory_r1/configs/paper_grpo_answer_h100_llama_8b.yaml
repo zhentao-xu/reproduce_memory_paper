@@ -27,8 +27,8 @@ rl:
   algorithm: grpo
   group_size: 8
   grpo_beta: 0.04
-  train_temperature: 1.0
-  train_top_p: 1.0
+  train_temperature: 1.2
+  train_top_p: 0.95
   train_top_k: 0
   train_repetition_penalty: 1.0
   eval_temperature: 0.0
