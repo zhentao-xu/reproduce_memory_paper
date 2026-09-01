@@ -146,17 +146,44 @@ resolve_local_snapshot() {
     (cd "$snapshot_path" && pwd)
 }
 
+diagnose_snapshot() {
+    local model_dir="$1"
+    echo
+    echo "=== Diagnostic for $model_dir ==="
+    if [ -f "$model_dir/refs/main" ]; then
+        echo "  refs/main content: '$(cat "$model_dir/refs/main")'"
+    else
+        echo "  refs/main NOT FOUND"
+    fi
+    echo "  snapshots/ dirs:"
+    ls -la "$model_dir/snapshots/" 2>&1 | sed 's/^/    /'
+    for snap in "$model_dir/snapshots"/*; do
+        [ -d "$snap" ] || continue
+        echo "  Contents of $(basename "$snap"):"
+        ls -la "$snap/" 2>&1 | sed 's/^/    /'
+        break
+    done
+    echo "=========================================="
+}
+
 QWEN_LOCAL="$(resolve_local_snapshot "models/models--Qwen--Qwen3-4B-Instruct-2507")"
 E5_LOCAL="$(resolve_local_snapshot "models/models--intfloat--e5-small-v2")"
 if [ -z "$QWEN_LOCAL" ] || [ -z "$E5_LOCAL" ]; then
-    echo "❌ Couldn't resolve a valid local snapshot for one of the models."
+    echo "❌ Couldn't resolve a valid local snapshot (missing config.json under snapshots/<hash>/)."
     echo "   Qwen3-4B → ${QWEN_LOCAL:-<not found>}"
     echo "   e5-small-v2 → ${E5_LOCAL:-<not found>}"
+
+    [ -z "$E5_LOCAL" ] && diagnose_snapshot "models/models--intfloat--e5-small-v2"
+    [ -z "$QWEN_LOCAL" ] && diagnose_snapshot "models/models--Qwen--Qwen3-4B-Instruct-2507"
+
     echo
-    echo "   Check for broken symlinks with:"
-    echo "     ls -la models/models--intfloat--e5-small-v2/snapshots/*/"
-    echo "   If files have '?' or red text, the rsync/scp didn't preserve symlinks."
-    echo "   Re-copy from source with:  rsync -avL src:./models/ ./models/"
+    echo "  Common causes:"
+    echo "  1. rsync/scp didn't preserve symlinks → 'ls -la snapshots/<hash>/' shows red/broken links."
+    echo "     Fix: re-copy with 'rsync -avL src:./models/ ./models/' (dereferences symlinks)."
+    echo "  2. Downloaded with 'huggingface-cli download --local-dir X' → files under X, not snapshots/."
+    echo "     Fix: re-download without --local-dir; it produces the correct snapshots/ tree."
+    echo "  3. snapshots/<hash>/ is empty (interrupted download)."
+    echo "     Fix: re-download the model."
     exit 2
 fi
 echo "  ↳ resolved Qwen3-4B → $QWEN_LOCAL"
