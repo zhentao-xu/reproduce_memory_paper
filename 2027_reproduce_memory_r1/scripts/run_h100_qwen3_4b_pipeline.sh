@@ -98,23 +98,41 @@ done
 echo "  ↳ runtime configs at $GENERATED_CONFIG_DIR/"
 
 # ---------------------------------------------------------------------- Python runner
+# Matches prep_env.sh: prefer existing .venv, else system python (no uv assumption on H100).
 
-if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
-    PY_RUN="uv run --no-sync"
-elif [ -d .venv ]; then
+if [ -d .venv ] && [ -x .venv/bin/python ]; then
     # shellcheck disable=SC1091
     source .venv/bin/activate
     PY_RUN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PY_RUN="python3"
 else
     PY_RUN="python"
 fi
 
-# Sanity: memory_r1 must be importable.
+# prep_env.sh already validated memory_r1 is importable. If someone ran with --skip-prep and
+# the package isn't there, fail loudly instead of trying to pip install (offline-safe).
 if ! $PY_RUN -c "import memory_r1" 2>/dev/null; then
-    echo "  ↳ memory_r1 not importable; running 'pip install -e .' ..."
-    $PY_RUN -m pip install -e . 2>&1 | tail -3
+    echo "❌ memory_r1 not importable. Run 'bash scripts/prep_env.sh' first, or drop --skip-prep."
+    exit 4
 fi
 echo "✓ memory_r1 importable"
+
+# ---------------------------------------------------------------------- pre-flight banner
+
+echo
+echo "=================== PRE-FLIGHT SUMMARY ==================="
+echo "  Working dir:  $REPO_ROOT"
+echo "  Python:       $($PY_RUN -c 'import sys; print(sys.version.split()[0])')"
+echo "  Torch:        $($PY_RUN -c 'import torch; print(torch.__version__)')"
+echo "  CUDA:         $($PY_RUN -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count(), "device(s)")')"
+echo "  HF offline:   $HF_HUB_OFFLINE"
+echo "  Qwen model:   $QWEN_LOCAL"
+echo "  e5 model:     $E5_LOCAL"
+echo "  Config dir:   $GENERATED_CONFIG_DIR/"
+echo "  Stages:       $( [ "$EVAL_ONLY" = "true" ] && echo "eval-only" || ( [ "$STAGE_A_ONLY" = "true" ] && echo "prep+stageA" || echo "prep+stageA+stageB+eval" ) )"
+echo "=========================================================="
+echo
 
 # ---------------------------------------------------------------------- pipeline
 

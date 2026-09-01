@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Environment prep for the Memory-R1 pipeline on an OFFLINE box (H100 without HF Hub access).
-# Assumes ./models/qwen3-4b/ and ./models/e5-small-v2/ have been rsync'd over from an online box
-# (see scripts/download_models.sh for how to produce them). Does NOT attempt any HF network I/O.
+# Environment prep for the Memory-R1 pipeline on an OFFLINE box (H100 without internet).
+# Idempotent: safe to re-run. Skips work that's already done.
 #
-# Handles: Python venv, pip install, HF cache env vars, model presence checks.
+# Adapts to the runtime it finds:
+#   1. If .venv exists → use it
+#   2. Elif `uv` is available → create + use .venv via uv
+#   3. Else → use system python; install deps via `pip install --user` (no venv)
+#
+# Validates (fails fast if anything is missing):
+#   - Python deps importable (attempts pip install ONLY if missing + PIP mirror reachable)
+#   - memory_r1 package importable
+#   - LoCoMo dataset present at data/raw/locomo/locomo10.json
+#   - Models present at models/qwen3-4b/ + models/e5-small-v2/
 #
 # Usage:
-#   bash scripts/prep_env.sh                    # full prep — venv + install + validate models
-#   bash scripts/prep_env.sh --skip-install     # skip pip install (deps already installed)
-#   bash scripts/prep_env.sh --skip-models      # skip model presence check
-#   bash scripts/prep_env.sh --models-only      # only validate models are present
+#   bash scripts/prep_env.sh              # full validation
+#   bash scripts/prep_env.sh --no-install # never attempt pip install even if deps missing
 
 set -euo pipefail
 
@@ -18,20 +24,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 echo "  (working dir: $REPO_ROOT)"
 
-SKIP_INSTALL=false
-SKIP_MODELS=false
-MODELS_ONLY=false
+NO_INSTALL=false
 for arg in "$@"; do
   case "$arg" in
-    --skip-install) SKIP_INSTALL=true ;;
-    --skip-models)  SKIP_MODELS=true ;;
-    --models-only)  MODELS_ONLY=true; SKIP_INSTALL=true ;;
+    --no-install) NO_INSTALL=true ;;
+    --skip-install) NO_INSTALL=true ;;   # backward compat
+    --skip-models) ;;                    # backward compat noop
+    --models-only) ;;                    # backward compat noop
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
 
 # ---------------------------------------------------------------- HF cache env vars
-# Force offline mode. Models must be present locally under ./models/.
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export HF_HOME="${HF_HOME:-$REPO_ROOT/models}"
@@ -43,98 +47,157 @@ mkdir -p "$HF_HOME"
 echo "  HF_HOME=$HF_HOME"
 echo "  HF_HUB_OFFLINE=$HF_HUB_OFFLINE (offline mode)"
 
-# ---------------------------------------------------------------- [1/3] Python + deps
-
-if ! $MODELS_ONLY; then
-    echo
-    echo "[1/3] Python venv + deps"
-
-    if command -v uv >/dev/null 2>&1; then
-        if [ ! -d .venv ]; then
-            echo "  → creating .venv via uv"
-            uv venv .venv
-        fi
-        PY_RUN="uv run --no-sync"
-        PIP_INSTALL="uv pip install"
-    else
-        if [ ! -d .venv ]; then
-            echo "  → creating .venv via python -m venv"
-            python3 -m venv .venv
-        fi
-        # shellcheck disable=SC1091
-        source .venv/bin/activate
-        PY_RUN="python"
-        PIP_INSTALL="pip install"
-    fi
-
-    if ! $SKIP_INSTALL; then
-        if [ -f requirements.txt ]; then
-            echo "  → $PIP_INSTALL -r requirements.txt"
-            $PIP_INSTALL -r requirements.txt
-        fi
-        echo "  → $PIP_INSTALL -e ."
-        $PIP_INSTALL -e . || echo "  ⚠ editable install failed"
-    else
-        echo "  → --skip-install: assuming deps installed"
-    fi
-else
-    if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
-        PY_RUN="uv run --no-sync"
-    elif [ -d .venv ]; then
-        # shellcheck disable=SC1091
-        source .venv/bin/activate
-        PY_RUN="python"
-    else
-        PY_RUN="python"
-    fi
-fi
-
-echo "  PY_RUN=$PY_RUN"
-
-# ---------------------------------------------------------------- [2/3] Datasets
+# ---------------------------------------------------------------- [1/4] Python runner
 
 echo
-echo "[2/3] Datasets"
+echo "[1/4] Python runner"
+
+if [ -d .venv ] && [ -x .venv/bin/python ]; then
+    # Existing venv — activate + use its pip/python.
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    PY="python"
+    PIP="pip install"
+    echo "  ✓ using existing .venv ($(python --version))"
+elif command -v uv >/dev/null 2>&1; then
+    echo "  → uv detected, no .venv — creating one via 'uv venv .venv'"
+    uv venv .venv
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    PY="python"
+    PIP="uv pip install"
+    echo "  ✓ .venv created + activated ($(python --version))"
+else
+    # No uv, no venv — use whatever python3 the system provides. pip install --user for isolation.
+    PY="python3"
+    PIP="pip install --user"
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "  ✗ no python3 in PATH — cannot proceed"
+        exit 3
+    fi
+    if ! command -v pip >/dev/null 2>&1 && ! $PY -m pip --version >/dev/null 2>&1; then
+        echo "  ✗ no pip / python -m pip — cannot install deps"
+        exit 3
+    fi
+    # Prefer `python3 -m pip install --user` over bare `pip` (more consistent across systems).
+    PIP="$PY -m pip install --user"
+    echo "  ✓ using system python ($($PY --version)) + '$PIP'"
+fi
+
+export PY PIP  # so subshells can see them
+
+# ---------------------------------------------------------------- [2/4] Python deps
+
+echo
+echo "[2/4] Python deps"
+
+REQUIRED_MODULES=(torch transformers peft trl accelerate sentence_transformers loguru huggingface_hub datasets yaml)
+MISSING_MODULES=()
+for mod in "${REQUIRED_MODULES[@]}"; do
+    if ! $PY -c "import $mod" 2>/dev/null; then
+        MISSING_MODULES+=("$mod")
+    fi
+done
+
+if [ ${#MISSING_MODULES[@]} -eq 0 ]; then
+    echo "  ✓ all required modules importable (torch, transformers, peft, trl, ...)"
+else
+    echo "  ⚠ missing: ${MISSING_MODULES[*]}"
+    if $NO_INSTALL; then
+        echo "  ✗ --no-install set — cannot proceed with missing deps."
+        exit 3
+    fi
+    if [ ! -f requirements.txt ]; then
+        echo "  ✗ no requirements.txt found and deps are missing"
+        exit 3
+    fi
+    echo "  → attempting: $PIP -r requirements.txt"
+    if ! $PIP -r requirements.txt; then
+        echo "  ✗ pip install failed — is the PIP mirror reachable on this box?"
+        echo "    If truly offline, pre-install deps on an online mirror-attached machine first."
+        exit 3
+    fi
+    # Re-check.
+    STILL_MISSING=()
+    for mod in "${MISSING_MODULES[@]}"; do
+        $PY -c "import $mod" 2>/dev/null || STILL_MISSING+=("$mod")
+    done
+    if [ ${#STILL_MISSING[@]} -gt 0 ]; then
+        echo "  ✗ still missing after install: ${STILL_MISSING[*]}"
+        exit 3
+    fi
+    echo "  ✓ all deps installed"
+fi
+
+# ---------------------------------------------------------------- [2b/4] memory_r1 package
+
+if $PY -c "import memory_r1" 2>/dev/null; then
+    echo "  ✓ memory_r1 package importable"
+else
+    echo "  ⚠ memory_r1 not importable"
+    if $NO_INSTALL; then
+        echo "  ✗ --no-install set — cannot install memory_r1."
+        exit 3
+    fi
+    echo "  → $PIP -e ."
+    if ! $PIP -e .; then
+        echo "  ✗ pip install -e . failed"
+        exit 3
+    fi
+    if ! $PY -c "import memory_r1" 2>/dev/null; then
+        echo "  ✗ memory_r1 still not importable after install (check pyproject.toml)"
+        exit 3
+    fi
+    echo "  ✓ memory_r1 installed + importable"
+fi
+
+# ---------------------------------------------------------------- [3/4] Dataset
+
+echo
+echo "[3/4] LoCoMo dataset"
 if [ -f data/raw/locomo/locomo10.json ]; then
-    echo "✓ data/raw/locomo/locomo10.json present"
+    SIZE=$(du -h data/raw/locomo/locomo10.json | cut -f1)
+    echo "  ✓ data/raw/locomo/locomo10.json ($SIZE)"
 else
-    echo "⚠ data/raw/locomo/locomo10.json missing — try 'git pull'"
+    echo "  ✗ data/raw/locomo/locomo10.json missing — try 'git pull'"
+    exit 3
 fi
 
-# ---------------------------------------------------------------- [3/3] Models
-
-if $SKIP_MODELS; then
-    echo
-    echo "[3/3] Models — skipped (--skip-models)"
-    exit 0
-fi
+# ---------------------------------------------------------------- [4/4] Models
 
 echo
-echo "[3/3] Models — validating presence"
+echo "[4/4] Models"
 
 check_flat_model() {
     local name="$1"
     local flat_dir="models/$name"
-    if [ ! -f "$flat_dir/config.json" ]; then
-        return 1
+    if [ -f "$flat_dir/config.json" ]; then
+        local size
+        size=$(du -sh "$flat_dir" | cut -f1)
+        echo "  ✓ $flat_dir ($size)"
+        return 0
     fi
-    echo "  ✓ $flat_dir (config.json present)"
+    return 1
 }
 
-MISSING=()
-check_flat_model "qwen3-4b"    || MISSING+=("qwen3-4b (Qwen/Qwen3-4B-Instruct-2507)")
-check_flat_model "e5-small-v2" || MISSING+=("e5-small-v2 (intfloat/e5-small-v2)")
+MISSING_MODELS=()
+check_flat_model "qwen3-4b"    || MISSING_MODELS+=("qwen3-4b (Qwen/Qwen3-4B-Instruct-2507)")
+check_flat_model "e5-small-v2" || MISSING_MODELS+=("e5-small-v2 (intfloat/e5-small-v2)")
 
-if [ ${#MISSING[@]} -gt 0 ]; then
+if [ ${#MISSING_MODELS[@]} -gt 0 ]; then
     echo
-    echo "❌ Missing model dir(s):"
-    for m in "${MISSING[@]}"; do echo "   - models/$m"; done
+    echo "  ✗ Missing model dir(s):"
+    for m in "${MISSING_MODELS[@]}"; do echo "     - models/$m"; done
     echo
-    echo "  This box is offline. Prepare the models on an ONLINE box first:"
-    echo "     bash scripts/download_models.sh"
-    echo "     rsync -av --info=progress2 models/ user@$(hostname):$(pwd)/models/"
+    echo "    This box is offline. On an online machine (Mac / jump host), run:"
+    echo "      bash scripts/download_models.sh"
+    echo "    Then rsync the models dir over to this host:"
+    echo "      rsync -av --info=progress2 models/ user@$(hostname):$(pwd)/models/"
     exit 3
 fi
 
 echo
-echo "✅ Environment prep done."
+echo "✅ Environment prep passed."
+echo "   Python:   $($PY -c 'import sys; print(sys.version.split()[0])')"
+echo "   PyTorch:  $($PY -c 'import torch; print(torch.__version__)')"
+echo "   CUDA:     $($PY -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count(), "device(s)")')"
