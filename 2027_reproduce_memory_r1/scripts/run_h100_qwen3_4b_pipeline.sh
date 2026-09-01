@@ -44,8 +44,9 @@ else
 fi
 
 # Same env vars prep_env.sh exports — needed here for the training subprocesses too.
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
-export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
+# Default to OFFLINE mode: models must be on disk already (see scripts/download_models.sh).
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export HF_HOME="${HF_HOME:-$REPO_ROOT/models}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$REPO_ROOT/models}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$REPO_ROOT/models}"
