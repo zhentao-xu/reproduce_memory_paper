@@ -105,7 +105,23 @@ class HFBackend:
         dtype: str = "bfloat16",
         load_in_4bit: bool = False,
         trust_remote_code: bool = False,
+        repetition_penalty: float | None = None,
+        attn_implementation: str | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        repetition_penalty : float | None
+            Default = 1.0 on CUDA, 1.15 on MPS. The MPS softmax on long prompts with bfloat16
+            occasionally collapses onto a single token (classic "!!!!!!" degeneration); a small
+            repetition penalty breaks the loop without measurably hurting generation quality.
+            Not needed on CUDA/A100/H100 where numerics are stable.
+        attn_implementation : str | None
+            Passed to ``AutoModelForCausalLM.from_pretrained``. Auto-selects
+            ``"flash_attention_2"`` on CUDA + bf16 when ``flash-attn`` is installed (3-5×
+            speedup on H100). Falls back to ``"sdpa"`` otherwise.
+        """
+
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -120,7 +136,29 @@ class HFBackend:
 
         resolved_device = device or resolve_device()
         torch_dtype = resolve_dtype(dtype, resolved_device)
-        kwargs: dict[str, Any] = {"torch_dtype": torch_dtype, "trust_remote_code": trust_remote_code}
+
+        # Device-appropriate defaults for generation-quality knobs.
+        if repetition_penalty is None:
+            repetition_penalty = 1.15 if resolved_device == "mps" else 1.0
+        self.repetition_penalty = repetition_penalty
+
+        # Try Flash Attention 2 on CUDA + bf16 when the wheel is available; big H100 speedup.
+        if attn_implementation is None:
+            if resolved_device == "cuda" and torch_dtype in (torch.bfloat16, torch.float16):
+                try:
+                    import flash_attn  # noqa: F401
+
+                    attn_implementation = "flash_attention_2"
+                except ImportError:
+                    attn_implementation = "sdpa"
+            else:
+                attn_implementation = "sdpa"
+
+        kwargs: dict[str, Any] = {
+            "torch_dtype": torch_dtype,
+            "trust_remote_code": trust_remote_code,
+            "attn_implementation": attn_implementation,
+        }
         if load_in_4bit:
             from transformers import BitsAndBytesConfig
 
@@ -145,14 +183,12 @@ class HFBackend:
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(self.device)
         do_sample = temperature > 0
         with torch.inference_mode():
-            # ``repetition_penalty=1.15`` prevents the classic "!!!!!!!!!!" degeneration when the
-            # softmax collapses onto a low-info token under bfloat16 on MPS with long prompts.
             out = self.model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
                 temperature=max(temperature, 1e-5),
                 do_sample=do_sample,
-                repetition_penalty=1.15,
+                repetition_penalty=self.repetition_penalty,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
         gen = out[0, inputs["input_ids"].shape[-1] :]

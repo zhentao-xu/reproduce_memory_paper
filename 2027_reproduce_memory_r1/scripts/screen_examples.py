@@ -41,10 +41,10 @@ def main() -> None:
     ap.add_argument("--max-new-tokens", default=96, type=int)
     ap.add_argument(
         "--truncate-memories-per-speaker",
-        default=15,
+        default=30,  # paper's default; drop to 5-10 on MPS to avoid bfloat16 degeneration.
         type=int,
-        help="Cap retrieved memories per speaker at inference time. Prompt-length + MPS bfloat16 "
-             "can cause the model to degenerate into '!!!!!!' when the prompt is too long.",
+        help="Cap retrieved memories per speaker at inference time. Paper uses 30 (=60 total). "
+             "On MPS + bfloat16, drop to 5-10 to avoid prompt-length degeneration into '!!!!!!'.",
     )
     args = ap.parse_args()
 

@@ -196,9 +196,20 @@ class GRPOManagerTrainer:
         if self.cfg.rl.train_top_k > 0:
             gen_kwargs["top_k"] = self.cfg.rl.train_top_k
 
-        responses: list[str] = []
+        # CUDA/CPU: batched sampling is G× faster than the loop.
+        if str(self.device).startswith("cuda") or self.device == "cpu":
+            with torch.inference_mode():
+                out = self.model.generate(
+                    **inputs, num_return_sequences=self.cfg.rl.group_size, **gen_kwargs
+                )
+            completions = out[:, inputs["input_ids"].shape[-1] :]
+            return [self.tokenizer.decode(c, skip_special_tokens=True).strip() for c in completions]
+
+        # MPS: per-candidate loop with explicit seeding (batched num_return_sequences returns
+        # identical candidates due to shared RNG state on MPS).
         from transformers import set_seed
 
+        responses: list[str] = []
         base_seed = int(torch.randint(0, 2**31 - 1, (1,)).item())
         for i in range(self.cfg.rl.group_size):
             seed_i = base_seed + i

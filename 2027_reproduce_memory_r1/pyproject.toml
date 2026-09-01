@@ -53,6 +53,9 @@ dependencies = [
 vllm = [
     "vllm>=0.6.0; sys_platform != 'darwin'",
 ]
+# H100 / A100 / L40S extras — install with `pip install --no-build-isolation flash-attn>=2.7.0`
+# separately. Not listed as a dependency because pip auto-install compiles from source and may
+# fail without CUDA + nvcc on the build host.
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",

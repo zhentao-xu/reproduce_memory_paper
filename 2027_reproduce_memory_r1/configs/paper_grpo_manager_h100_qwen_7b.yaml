@@ -1,0 +1,55 @@
+# Paper-scale GRPO fine-tuning of the Memory Manager on 1× H100.
+# Reproduces the Qwen2.5-7B-Instruct row of Table 1 (Memory-R1-GRPO).
+
+stage: manager
+run_name: paper_grpo_manager_qwen_7b
+output_dir: outputs/checkpoints
+log_with: wandb
+
+model:
+  name_or_path: Qwen/Qwen2.5-7B-Instruct
+  dtype: bfloat16
+  use_peft: true
+  peft_r: 16
+  peft_alpha: 32
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 128
+  micro_batch_size_per_gpu: 2
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 8
+  grpo_beta: 0.04
+  train_temperature: 1.0
+  train_top_p: 1.0
+  train_top_k: 0
+  train_repetition_penalty: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096
+  max_response_length: 2048
+  total_steps: 200
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  top_k_context: 10          # Manager sees this many old-memory entries per rollout
+  top_k_per_speaker: 30      # Answer Agent (used inside Manager's reward) retrieves this many
+
+reward:
+  reward_type: em
+
+answer_backend:
+  # For faithful reproduction, first train the Answer Agent, then point ``checkpoint`` at that
+  # LoRA adapter path. If left null we use the base model as the reward oracle (paper's
+  # ablation A).
+  name_or_path: Qwen/Qwen2.5-7B-Instruct
+  dtype: bfloat16
+  checkpoint: null

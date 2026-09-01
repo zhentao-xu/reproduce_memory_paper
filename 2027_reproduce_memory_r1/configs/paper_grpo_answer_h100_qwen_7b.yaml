@@ -1,0 +1,57 @@
+# Paper-scale GRPO fine-tuning of the Answer Agent on 1× H100.
+# Reproduces the Qwen2.5-7B-Instruct row of Table 1 (Memory-R1-GRPO).
+#
+# Hyperparameters come from paper Appendix D. On 1× H100 (80 GB HBM3) this trains in ~6-8 hours
+# with LoRA r=16. For full-parameter FT you'll need 4× H100 (paper's setup).
+
+stage: answer
+run_name: paper_grpo_answer_qwen_7b
+output_dir: outputs/checkpoints
+log_with: wandb            # set to none if you don't want wandb
+
+model:
+  name_or_path: Qwen/Qwen2.5-7B-Instruct
+  dtype: bfloat16
+  use_peft: true            # LoRA r=16. Set false + increase GPUs for full-param FT.
+  peft_r: 16
+  peft_alpha: 32
+  peft_dropout: 0.05
+
+optim:
+  actor_lr: 1.0e-6          # paper Appendix D
+  critic_lr: 1.0e-5         # (unused for GRPO)
+  total_batch_size: 128     # paper's exact batch
+  micro_batch_size_per_gpu: 2
+  ppo_epochs: 4
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 8             # paper G
+  grpo_beta: 0.04
+  train_temperature: 1.0    # paper's rollout temp (not the MPS 1.5 hack)
+  train_top_p: 1.0
+  train_top_k: 0
+  train_repetition_penalty: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096   # paper
+  max_response_length: 2048 # paper
+  total_steps: 200          # paper Figure 7
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  # top-30 per speaker (60 total memories) — paper's exact retrieval budget.
+  top_k_context: 10
+  top_k_per_speaker: 30
+
+reward:
+  reward_type: em           # paper Table 2: EM > J across F1/B1
+
+answer_backend:
+  name_or_path: Qwen/Qwen2.5-7B-Instruct
+  dtype: bfloat16

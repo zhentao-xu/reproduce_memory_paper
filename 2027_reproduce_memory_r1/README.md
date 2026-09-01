@@ -112,6 +112,62 @@ Tips:
 
 ---
 
+## H100 / A100 quick-start (paper-scale reproduction)
+
+If you just want to reproduce Table 1's SOTA row (Memory-R1-GRPO / LLaMA-3.1-8B-Instruct) on a
+single H100 (80 GB), here's the minimal recipe:
+
+```bash
+# 0. Install
+git clone <this repo> && cd 2027_reproduce_memory_r1
+uv sync                        # base deps
+# Flash Attention 2 (3-5× speedup on H100). Requires CUDA 12.1+, nvcc.
+uv pip install --no-build-isolation "flash-attn>=2.7.0"
+
+# 1. Env
+cp .env.example .env           # sets HF_HOME=./models
+set -a; source .env; set +a
+export OPENAI_API_KEY=sk-...        # GPT-4o-mini fact extractor + LLM-as-a-Judge
+export HUGGINGFACE_HUB_TOKEN=hf_... # LLaMA-3.1 is gated
+
+# 2. Data — LoCoMo + MSC + LongMemEval
+uv run python scripts/download_datasets.py --dataset all
+
+# 3. Algorithm 1 & 2 with paper's GPT-4o-mini extractor + top-30/speaker retrieval
+uv run python scripts/prepare_manager_data.py \
+    --extractor openai --model gpt-4o-mini --write-splits
+uv run python scripts/prepare_answer_data.py \
+    --extractor openai --model gpt-4o-mini \
+    --encoder intfloat/e5-large-v2 --top-k-per-speaker 30
+
+# 4. Train Answer Agent first (frozen Answer Agent is used as Manager reward oracle)
+uv run python scripts/train_answer_agent.py configs/paper_grpo_answer_h100_llama_8b.yaml
+# ⇒ outputs/checkpoints/paper_grpo_answer_llama_8b/step_200 (LoRA adapter, ~200 MB)
+
+# 5. Train Memory Manager with the trained Answer Agent as reward
+#    (edit answer_backend.checkpoint in the manager config to point at step 4's adapter first)
+uv run python scripts/train_memory_manager.py configs/paper_grpo_manager_h100_qwen_7b.yaml
+
+# 6. Evaluate on LoCoMo test (1307 QA)
+uv run python scripts/evaluate.py configs/eval_h100_paper.yaml
+```
+
+**Wall-clock estimate on 1× H100**:
+- Data prep with GPT-4o-mini: ~1 hour (rate-limited by OpenAI)
+- Answer Agent GRPO (200 steps): ~6–8 hours
+- Memory Manager GRPO (200 steps): ~10–12 hours (extra Answer forward per rollout)
+- Eval on LoCoMo test: ~1 hour
+
+**Multi-GPU** (4× H100 for full-parameter FT matching paper Appendix D):
+```bash
+uv pip install accelerate deepspeed
+accelerate launch --config_file configs/accelerate_4gpu.yaml \
+    scripts/train_answer_agent.py configs/paper_grpo_answer_h100_llama_8b.yaml
+```
+(You'll need to write an `accelerate_4gpu.yaml` — see `accelerate config` for the wizard.)
+
+---
+
 ## 4. RL fine-tuning
 
 Two agents × two RL algorithms → four configs under `configs/`.

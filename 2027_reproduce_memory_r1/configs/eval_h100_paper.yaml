@@ -1,0 +1,26 @@
+# End-to-end evaluation on LoCoMo test split (1307 QA) after paper-scale H100 training.
+# Point checkpoints at outputs/checkpoints/paper_grpo_{answer,manager}_qwen_7b/step_200.
+
+benchmark: locomo
+data_path: data/raw/locomo/locomo10.json
+
+manager_checkpoint: outputs/checkpoints/paper_grpo_manager_qwen_7b/step_200
+answer_checkpoint: outputs/checkpoints/paper_grpo_answer_qwen_7b/step_200
+
+# Facts extractor + LLM-as-a-Judge use GPT-4o-mini per paper Appendix B.2 / Figure 12.
+extractor_backend: openai
+extractor_model: gpt-4o-mini
+judge_model: gpt-4o-mini
+
+# Paper's retrieval budget.
+top_k_per_speaker: 30
+top_k_context_manager: 10
+
+use_judge: true
+dtype: bfloat16
+
+# Paper Appendix D: max_new_tokens 2048 for manager, 512 for answer.
+max_new_tokens_manager: 2048
+max_new_tokens_answer: 512
+
+output_dir: outputs/predictions_paper

@@ -105,12 +105,14 @@ class GRPOAnswerTrainer:
         )
 
     def _sample_group(self, prompt: str) -> list[str]:
-        """Sample G candidates one at a time, each seeded independently.
+        """Sample G candidates.
 
-        Batched ``num_return_sequences=G`` produces IDENTICAL candidates on MPS (torch RNG state is
-        shared across the parallel decode paths). We loop instead — slower by a factor of G, but
-        candidates are actually independent draws from the sampling distribution, so GRPO's
-        group-relative advantage has non-zero variance to work with.
+        On CUDA we use batched ``num_return_sequences=G`` — one ``generate()`` call gives G
+        independent samples, ~G× faster than looping.
+
+        On MPS we loop because ``num_return_sequences=G`` there produces IDENTICAL candidates
+        (shared RNG state across the parallel decode paths), and we manually seed each iteration
+        with both ``torch.manual_seed`` and ``torch.mps.manual_seed`` to force diversity.
         """
 
         self.model.eval()
@@ -127,16 +129,23 @@ class GRPOAnswerTrainer:
         if self.cfg.rl.train_top_k > 0:
             gen_kwargs["top_k"] = self.cfg.rl.train_top_k
 
-        responses: list[str] = []
-        # Reseed *every* torch RNG for each candidate. MPS has its own RNG that
-        # ``torch.manual_seed`` does NOT touch — we need ``torch.mps.manual_seed`` explicitly.
-        # Transformers also caches sampling state via ``set_seed``.
+        # ---------- CUDA / CPU: batched sampling ----------
+        if str(self.device).startswith("cuda") or self.device == "cpu":
+            with torch.inference_mode():
+                out = self.model.generate(
+                    **inputs, num_return_sequences=self.cfg.rl.group_size, **gen_kwargs
+                )
+            completions = out[:, inputs["input_ids"].shape[-1] :]
+            return [self.tokenizer.decode(c, skip_special_tokens=True).strip() for c in completions]
+
+        # ---------- MPS: per-candidate loop with explicit seeding ----------
         from transformers import set_seed
 
+        responses: list[str] = []
         base_seed = int(torch.randint(0, 2**31 - 1, (1,)).item())
         for i in range(self.cfg.rl.group_size):
             seed_i = base_seed + i
-            set_seed(seed_i)  # sets python, numpy, torch (all backends)
+            set_seed(seed_i)
             if torch.backends.mps.is_available():
                 torch.mps.manual_seed(seed_i)
             with torch.inference_mode():
