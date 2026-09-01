@@ -23,8 +23,9 @@ deepspeed; sys_platform != "darwin"
 sentence-transformers==5.7.0
 faiss-cpu==1.13.2
 
-# Data / datasets
-datasets==5.0.1
+# Data / datasets — datasets left unpinned because pinning to 5.0.1 drags in
+# fsspec 2026.6.0, which conflicts with gcsfs / s3fs (they want >=2026.7.0).
+datasets
 huggingface-hub==1.28.0
 
 # LLM APIs (fact extraction + LLM-as-a-Judge)
