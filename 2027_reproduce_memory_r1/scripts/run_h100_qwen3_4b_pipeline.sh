@@ -91,9 +91,49 @@ fail_missing "models/models--intfloat--e5-small-v2" \
        HF_HOME=./models huggingface-cli download intfloat/e5-small-v2
      then scp/rsync ./models/models--intfloat--e5-small-v2 to this host."
 
-fail_missing ".venv" \
-    "Run 'uv sync' on an online box, then rsync .venv/ to this host. Alternatively, if the
-     H100 box has PyPI access (even briefly), run 'uv sync --frozen' now."
+# Python runner: prefer uv if installed, otherwise fall back to plain python. This lets the
+# script work both on a uv-managed box and on a corp box where uv isn't available and packages
+# are pip-installed to --user / a plain venv.
+if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
+    PY_RUN="uv run --no-sync"
+    echo "✓ uv + .venv detected — using 'uv run'"
+elif [ -d .venv ]; then
+    # Plain venv, activate it and use python directly.
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    PY_RUN="python"
+    echo "✓ .venv detected — using activated python"
+else
+    # No venv; assume packages are installed globally (or via pip install --user).
+    PY_RUN="python"
+    echo "✓ using system python"
+fi
+
+# Sanity-check that the top-level deps are actually importable — otherwise the training will
+# fail 5 min in with a cryptic ModuleNotFoundError.
+if ! $PY_RUN -c "import torch, transformers, peft, trl, sentence_transformers, loguru" 2>/dev/null; then
+    echo
+    echo "❌ Python deps missing. Install them first:"
+    echo "     pip install -r requirements.txt"
+    echo "   Or for an isolated venv:"
+    echo "     python3.12 -m venv .venv && source .venv/bin/activate"
+    echo "     pip install -r requirements.txt"
+    exit 3
+fi
+echo "✓ Python deps importable"
+
+# Verify the ``memory_r1`` package is importable (installed via ``pip install -e .``). Without
+# it, the entry scripts fail with 'ModuleNotFoundError: No module named memory_r1'.
+if ! $PY_RUN -c "import memory_r1" 2>/dev/null; then
+    echo "  ↳ memory_r1 package not installed; running 'pip install -e .' now..."
+    $PY_RUN -m pip install -e . 2>&1 | tail -3
+    if ! $PY_RUN -c "import memory_r1" 2>/dev/null; then
+        echo "❌ 'pip install -e .' didn't make memory_r1 importable. Debug with:"
+        echo "     $PY_RUN -c 'import memory_r1; print(memory_r1.__file__)'"
+        exit 4
+    fi
+fi
+echo "✓ memory_r1 package importable"
 
 echo "  (offline mode — HF_HUB_OFFLINE=$HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE=$TRANSFORMERS_OFFLINE)"
 
@@ -106,7 +146,7 @@ else
     if [ -f data/processed/manager_train.jsonl ] && [ -f data/processed/locomo_train.jsonl ]; then
         echo "  ✓ data/processed/manager_train.jsonl already present. Skipping."
     else
-        uv run python scripts/prepare_manager_data.py \
+        $PY_RUN scripts/prepare_manager_data.py \
             --locomo data/raw/locomo/locomo10.json \
             --out data/processed/manager_train.jsonl \
             --extractor heuristic \
@@ -119,7 +159,7 @@ else
     else
         # Uses ``--extractor heuristic`` (sentence splitter, no LLM) + intfloat/e5-small-v2 +
         # top-30 per speaker (60 total memories) — paper's retrieval budget.
-        uv run python scripts/prepare_answer_data.py \
+        $PY_RUN scripts/prepare_answer_data.py \
             --locomo data/raw/locomo/locomo10.json \
             --out data/processed/answer_train.jsonl \
             --extractor heuristic \
@@ -134,7 +174,7 @@ else
     if [ -d "$STAGE_A_CKPT" ]; then
         echo "  ✓ Stage A checkpoint already at $STAGE_A_CKPT. Skipping training."
     else
-        uv run python scripts/train_answer_agent.py \
+        $PY_RUN scripts/train_answer_agent.py \
             configs/paper_grpo_answer_h100_qwen3_4b.yaml
     fi
 
@@ -151,7 +191,7 @@ else
         echo "  ✓ Stage B checkpoint already at $STAGE_B_CKPT. Skipping training."
     else
         # The manager config's answer_backend.checkpoint already points at Stage A's step_200.
-        uv run python scripts/train_memory_manager.py \
+        $PY_RUN scripts/train_memory_manager.py \
             configs/paper_grpo_manager_h100_qwen3_4b.yaml
     fi
 fi
@@ -159,7 +199,7 @@ fi
 # ---------------------------------------------------------------------- 5. eval
 
 echo "[5/6] Evaluating on LoCoMo test set (1307 QA)..."
-uv run python scripts/evaluate.py configs/eval_h100_qwen3_4b_no_openai.yaml
+$PY_RUN scripts/evaluate.py configs/eval_h100_qwen3_4b_no_openai.yaml
 
 echo
 echo "🏁 Full pipeline complete."
