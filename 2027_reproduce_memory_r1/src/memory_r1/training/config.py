@@ -21,10 +21,11 @@ class ModelConfig:
     peft_alpha: int = 32
     peft_dropout: float = 0.05
     # When true, actor runs with ``gradient_checkpointing_enable()`` — trades ~30 % compute
-    # for ~5-10× activation-memory reduction. Needed for full-param FT or when VRAM is tight;
-    # wasteful when µ and G both fit comfortably (H100 + LoRA + G=16 sits at ~30 % VRAM with
-    # this off, and disabling gets ~30 % more throughput).
-    use_gradient_checkpointing: bool = False
+    # for ~5-10× activation-memory reduction. Default TRUE because at G=16 + µ=8 on 4B model,
+    # storing all layer activations across all micro-batch candidates eats 30-40 GB per forward
+    # and blows past even 80 GB H100. Only turn this off if you've measured VRAM headroom
+    # explicitly (e.g. small G, short responses, or a smaller model).
+    use_gradient_checkpointing: bool = True
 
 
 @dataclass

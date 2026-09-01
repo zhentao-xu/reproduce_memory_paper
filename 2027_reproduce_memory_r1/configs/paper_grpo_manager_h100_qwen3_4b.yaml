@@ -14,12 +14,13 @@ model:
   peft_r: 16
   peft_alpha: 32
   peft_dropout: 0.05
+  use_gradient_checkpointing: true  # required at G=16 / µ=8 on 4B; 30 % compute for OOM safety
 
 optim:
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
   total_batch_size: 256
-  micro_batch_size_per_gpu: 4
+  micro_batch_size_per_gpu: 8
   clip_range: 0.2
   kl_coef: 0.02
   max_grad_norm: 1.0
