@@ -16,7 +16,10 @@
 #        models/qwen2.5-7b/     Qwen/Qwen2.5-7B-Instruct          (~14 GB)
 #        models/e5-small-v2/    intfloat/e5-small-v2              (~150 MB)
 #
-#    all — everything above (~38 GB total).
+#    extractor — the local fact-extractor replacement for GPT-4o-mini (~54 GB):
+#        models/qwen3.8-27b/    Qwen/Qwen3.8-27B                  (~54 GB, 18 shards)
+#
+#    all — everything above (~92 GB total).
 #
 #  LLaMA-3.1-8B is a GATED model on HuggingFace. Before downloading, you must:
 #    1. Accept the LLaMA 3.1 license at
@@ -30,9 +33,10 @@
 #  `AutoModel.from_pretrained("models/<name>")`.
 #
 #  USAGE:
-#    bash scripts/download_models.sh                 # small bundle (default)
-#    bash scripts/download_models.sh --models paper  # paper Table-1 backbones
-#    bash scripts/download_models.sh --models all    # everything (~38 GB)
+#    bash scripts/download_models.sh                     # small bundle (default)
+#    bash scripts/download_models.sh --models paper      # paper Table-1 backbones
+#    bash scripts/download_models.sh --models extractor  # only the 27B fact extractor
+#    bash scripts/download_models.sh --models all        # everything (~92 GB)
 #
 #  Then on your workstation:
 #    rsync -av --info=progress2 models/ user@h100:/path/to/repo/models/
@@ -58,15 +62,15 @@ for arg in "$@"; do
           BUNDLE="$arg"
       else
           echo "Unknown arg: $arg" >&2
-          echo "Valid: --models {small|paper|all}" >&2
+          echo "Valid: --models {small|paper|extractor|all}" >&2
           exit 1
       fi
       ;;
   esac
 done
 case "$BUNDLE" in
-  small|paper|all) ;;
-  *) echo "Unknown bundle: $BUNDLE (valid: small, paper, all)" >&2; exit 1 ;;
+  small|paper|extractor|all) ;;
+  *) echo "Unknown bundle: $BUNDLE (valid: small, paper, extractor, all)" >&2; exit 1 ;;
 esac
 echo "  → bundle: $BUNDLE"
 
@@ -143,10 +147,14 @@ case "$BUNDLE" in
     download_one "Qwen/Qwen2.5-7B-Instruct"         "models/qwen2.5-7b"
     download_one "intfloat/e5-small-v2"             "models/e5-small-v2"
     ;;
+  extractor)
+    download_one "Qwen/Qwen3.8-27B"                 "models/qwen3.8-27b"
+    ;;
   all)
     download_one "Qwen/Qwen3-4B-Instruct-2507"      "models/qwen3-4b"
     download_one "meta-llama/Llama-3.1-8B-Instruct" "models/llama-3.1-8b"
     download_one "Qwen/Qwen2.5-7B-Instruct"         "models/qwen2.5-7b"
+    download_one "Qwen/Qwen3.8-27B"                 "models/qwen3.8-27b"
     download_one "intfloat/e5-small-v2"             "models/e5-small-v2"
     ;;
 esac
