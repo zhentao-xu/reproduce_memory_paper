@@ -20,7 +20,7 @@ from memory_r1.training.config import TrainerConfig
 from memory_r1.training.grpo_manager import _cyclic, _response_logprobs
 from memory_r1.training.reward_pipeline import AnswerTrainSample, score_answer_batch
 from memory_r1.training.rollout import build_chat_prompt
-from memory_r1.utils import logger, resolve_device, resolve_dtype
+from memory_r1.utils import logger, resolve_attn_impl, resolve_device, resolve_dtype
 
 
 
@@ -72,13 +72,13 @@ class GRPOAnswerTrainer:
 
         self.device = resolve_device()
         dtype = resolve_dtype(cfg.model.dtype, self.device)
-        logger.info("Device: {}, dtype: {}", self.device, dtype)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            cfg.model.name_or_path, torch_dtype=dtype, trust_remote_code=cfg.model.trust_remote_code
-        )
-        self.ref_model = AutoModelForCausalLM.from_pretrained(
-            cfg.model.name_or_path, torch_dtype=dtype, trust_remote_code=cfg.model.trust_remote_code
-        )
+        attn_impl = resolve_attn_impl(self.device)
+        logger.info("Device: {}, dtype: {}, attn_impl: {}", self.device, dtype, attn_impl or "default")
+        load_kwargs = dict(torch_dtype=dtype, trust_remote_code=cfg.model.trust_remote_code)
+        if attn_impl is not None:
+            load_kwargs["attn_implementation"] = attn_impl
+        self.model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
+        self.ref_model = AutoModelForCausalLM.from_pretrained(cfg.model.name_or_path, **load_kwargs)
         for p in self.ref_model.parameters():
             p.requires_grad = False
 

@@ -77,3 +77,17 @@ def _mps_supports_bf16() -> bool:
         return True
     except Exception:
         return False
+
+
+def resolve_attn_impl(device: str) -> str | None:
+    """Return the ``attn_implementation`` kwarg for ``AutoModelForCausalLM.from_pretrained``.
+
+    On MPS the fused SDPA kernel silently produces NaN with bf16/fp16 once a decode extends
+    past ~1k tokens (Qwen3-4B, PyTorch 2.9). ``generate()`` then dies inside ``multinomial``
+    with "probability tensor contains inf/nan/element < 0". Falling back to eager attention
+    keeps generation numerically stable at the cost of ~15-20% throughput — a fine trade for
+    a Mac smoke test. On CUDA we return ``None`` so transformers picks its default
+    (SDPA / flash-attn-2 if available).
+    """
+
+    return "eager" if device == "mps" else None
