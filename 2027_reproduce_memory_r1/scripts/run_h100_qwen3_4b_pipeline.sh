@@ -1,19 +1,44 @@
 #!/usr/bin/env bash
-# End-to-end Memory-R1 pipeline on a single H100 with Qwen3-4B-Instruct-2507 + e5-small-v2.
-# Open-source-only variant (no OpenAI). Environment prep + model download live in the sibling
-# script scripts/prep_env.sh so this file focuses only on data prep + training + eval.
+# =============================================================================
+#  run_h100_qwen3_4b_pipeline.sh — full Memory-R1 reproduction pipeline.
+# =============================================================================
 #
-# Wall-clock estimates on 1× H100 (80 GB):
-#   Data prep (heuristic extractor + e5-small-v2):      ~ 5 min
-#   Stage A: Answer Agent GRPO (200 steps):              ~ 3-5 hours
-#   Stage B: Memory Manager GRPO (200 steps):            ~ 5-7 hours
-#   End-to-end eval on LoCoMo test:                      ~ 30-45 min
+#  WHAT IT DOES (in plain English):
+#    Runs the entire Memory-R1 paper reproduction end-to-end. Concretely:
+#      1. Turns the LoCoMo conversations into two supervised training sets
+#         (one for the Memory Manager, one for the Answer Agent).
+#      2. Fine-tunes the Answer Agent with GRPO (a reinforcement-learning
+#         algorithm) so it learns to answer questions from retrieved memories.
+#      3. Fine-tunes the Memory Manager with GRPO so it learns which memories
+#         to update / add / delete after each conversation turn.
+#      4. Evaluates the trained pair on the LoCoMo test set (1307 questions)
+#         and writes predictions + metrics to `outputs/`.
 #
-# Usage:
-#   bash scripts/run_h100_qwen3_4b_pipeline.sh                  # env prep + full pipeline
-#   bash scripts/run_h100_qwen3_4b_pipeline.sh --skip-prep      # skip prep_env.sh
-#   bash scripts/run_h100_qwen3_4b_pipeline.sh --stage-a-only   # skip Manager training + eval
-#   bash scripts/run_h100_qwen3_4b_pipeline.sh --eval-only      # only re-run evaluation
+#  WHAT IT NEEDS BEFORE YOU RUN IT:
+#    - A working `.venv/` and installed dependencies. Get these by running
+#      `bash scripts/prep_env.sh` first (only needs to happen once per checkout).
+#    - The Qwen3-4B and e5-small-v2 model directories under `models/`.
+#      `prep_env.sh` verifies these are present.
+#    - A GPU. On an H100 (80 GB), the wall-clock estimates below are realistic.
+#      On smaller GPUs (A100 40 GB / L40S) you may need to reduce batch size
+#      in the config files.
+#
+#  WALL-CLOCK ESTIMATES on 1× H100 (80 GB):
+#    Data prep    (heuristic extractor + e5-small-v2):    ~  5 min
+#    Stage A:     Answer Agent GRPO   (200 steps):        ~  3-5 hours
+#    Stage B:     Memory Manager GRPO (200 steps):        ~  5-7 hours
+#    End-to-end eval on the 1307-question LoCoMo test:    ~ 30-45 min
+#
+#  USAGE (always run prep_env.sh first):
+#    bash scripts/run_h100_qwen3_4b_pipeline.sh                  # full pipeline
+#    bash scripts/run_h100_qwen3_4b_pipeline.sh --stage-a-only   # only Answer Agent training
+#    bash scripts/run_h100_qwen3_4b_pipeline.sh --eval-only      # only re-run evaluation
+#                                                                # (assumes checkpoints exist)
+#
+#  IDEMPOTENCY:
+#    Every step checks whether its output already exists (a data file, a
+#    checkpoint dir) and skips itself if so. Safe to Ctrl-C mid-run and re-run.
+# =============================================================================
 
 set -euo pipefail
 
@@ -24,27 +49,20 @@ echo "  (working dir: $REPO_ROOT)"
 
 STAGE_A_ONLY=false
 EVAL_ONLY=false
-SKIP_PREP=false
 for arg in "$@"; do
   case "$arg" in
     --stage-a-only) STAGE_A_ONLY=true ;;
     --eval-only)    EVAL_ONLY=true ;;
-    --skip-prep)    SKIP_PREP=true ;;
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
 
-# ---------------------------------------------------------------------- [0/6] env prep
-
-if ! $SKIP_PREP; then
-    echo "[0/6] Environment prep (venv + models) — see scripts/prep_env.sh"
-    bash scripts/prep_env.sh
-else
-    echo "[0/6] --skip-prep: assuming env + models already ready"
-fi
-
-# Same env vars prep_env.sh exports — needed here for the training subprocesses too.
-# Default to OFFLINE mode: models must be on disk already (see scripts/download_models.sh).
+# ---------------------------------------------------------------- HF-offline env vars
+# Same env vars prep_env.sh set — we re-export them here because prep_env.sh
+# runs in a separate shell so its exports don't propagate to us. These tell
+# HuggingFace to load models from `models/` on disk and never hit the network.
+# Also enable `PYTHONUNBUFFERED=1` so training logs stream in real time (no
+# blocking buffering that hides progress for 30 seconds at a time).
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export HF_HOME="${HF_HOME:-$REPO_ROOT/models}"
@@ -54,6 +72,14 @@ export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$REPO_ROOT/models}"
 export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------- resolve model paths
+# The config YAMLs shipped with the repo use HuggingFace repo IDs like
+# "Qwen/Qwen3-4B-Instruct-2507". At runtime we want the training code to load
+# from the LOCAL directory (offline). This block:
+#   1. Finds where each model lives on disk (a flat `models/qwen3-4b/` dir OR
+#      a HF cache dir with `snapshots/<hash>/`), and
+#   2. Rewrites the YAML configs into `outputs/generated_configs/` with the HF
+#      repo IDs replaced by absolute local paths. The training scripts then
+#      load those generated configs.
 
 # Locate the flat model dirs (prep_env.sh already downloaded them; here we just look them up).
 find_local_model() {
@@ -98,7 +124,9 @@ done
 echo "  ↳ runtime configs at $GENERATED_CONFIG_DIR/"
 
 # ---------------------------------------------------------------------- Python runner
-# Matches prep_env.sh: prefer existing .venv, else system python (no uv assumption on H100).
+# Pick which python to invoke: the `.venv` created by prep_env.sh if present
+# (which is the expected case), else the system `python3`. `PY_RUN` is used
+# for every training/eval subprocess below.
 
 if [ -d .venv ] && [ -x .venv/bin/python ]; then
     # shellcheck disable=SC1091
@@ -110,15 +138,20 @@ else
     PY_RUN="python"
 fi
 
-# prep_env.sh already validated memory_r1 is importable. If someone ran with --skip-prep and
-# the package isn't there, fail loudly instead of trying to pip install (offline-safe).
+# Quick sanity check that prep_env.sh actually ran successfully — the training subprocesses
+# below all `import memory_r1`, so failing here surfaces the problem in 1s instead of 30s.
 if ! $PY_RUN -c "import memory_r1" 2>/dev/null; then
-    echo "❌ memory_r1 not importable. Run 'bash scripts/prep_env.sh' first, or drop --skip-prep."
+    echo "❌ 'memory_r1' Python package not importable."
+    echo "   Run 'bash scripts/prep_env.sh' first (it creates .venv and installs the package)."
     exit 4
 fi
 echo "✓ memory_r1 importable"
 
 # ---------------------------------------------------------------------- pre-flight banner
+# Print a one-shot summary of everything the pipeline is about to use — Python
+# version, PyTorch version, whether CUDA is visible, resolved model paths, etc.
+# Useful when things go wrong (paste the banner into a bug report; it tells
+# you 90 % of what someone would ask).
 
 echo
 echo "=================== PRE-FLIGHT SUMMARY ==================="
@@ -140,6 +173,12 @@ if [ "$EVAL_ONLY" = "true" ]; then
     echo "[eval-only] Skipping data prep + training. Jumping to evaluation."
 else
     # ---------------------------------------------------------------------- 1. data prep
+    # Turn raw LoCoMo conversations into training tuples for the Memory Manager.
+    # Each tuple = (retrieved_facts, old_memory_bank, linked_QA). The Manager
+    # will be RL-trained to produce ADD/UPDATE/DELETE/NOOP operations against
+    # the old memory bank such that the downstream Answer Agent gets the linked
+    # QA right. This step ships alongside `--write-splits` so a train/val split
+    # of the raw conversations is also produced (used downstream by eval).
     echo "[1/6] Manager training tuples (Algorithm 1)"
     if [ -f data/processed/manager_train.jsonl ] && [ -f data/processed/locomo_train.jsonl ]; then
         echo "  ✓ data/processed/manager_train.jsonl present — skipping."
@@ -151,6 +190,11 @@ else
             --write-splits
     fi
 
+    # Turn raw LoCoMo conversations into training tuples for the Answer Agent.
+    # Each tuple = (question, retrieved_top_60_memories, gold_answer). "top-60"
+    # means top-30 memories per speaker (there are always 2 speakers in a LoCoMo
+    # dialogue), retrieved by e5-small-v2 cosine similarity. The Answer Agent
+    # is trained to produce the gold answer given those 60 memories as context.
     echo "[2/6] Answer Agent training tuples (Algorithm 2)"
     if [ -f data/processed/answer_train.jsonl ]; then
         echo "  ✓ data/processed/answer_train.jsonl present — skipping."
@@ -164,6 +208,11 @@ else
     fi
 
     # ---------------------------------------------------------------------- 3. Stage A
+    # GRPO fine-tune the Answer Agent on the tuples produced in step [2/6].
+    # GRPO = Group-Relative Policy Optimization: for each prompt we sample G=8
+    # candidate answers, reward each against the gold answer, and use the
+    # group-normalized advantages to update the LoRA adapters. Paper hparams:
+    # 200 steps, batch size 128, group size 8. Wall-clock: 3-5 hours on 1× H100.
     echo "[3/6] Stage A: Answer Agent GRPO (200 steps, batch=128, G=8)"
     STAGE_A_CKPT="outputs/checkpoints/paper_grpo_answer_qwen3_4b/step_200"
     if [ -d "$STAGE_A_CKPT" ]; then
@@ -179,6 +228,12 @@ else
     fi
 
     # ---------------------------------------------------------------------- 4. Stage B
+    # GRPO fine-tune the Memory Manager. The reward loop is: for each Manager
+    # rollout (a proposed set of ADD/UPDATE/DELETE/NOOP ops), APPLY the ops to
+    # the memory bank, then feed the resulting bank to the frozen Stage-A
+    # Answer Agent and score whether it now answers the linked question
+    # correctly. The Manager therefore learns to curate memory in a way that
+    # actively helps downstream QA. Wall-clock: 5-7 hours on 1× H100.
     echo "[4/6] Stage B: Memory Manager GRPO (200 steps)"
     STAGE_B_CKPT="outputs/checkpoints/paper_grpo_manager_qwen3_4b/step_200"
     if [ -d "$STAGE_B_CKPT" ]; then
@@ -190,6 +245,10 @@ else
 fi
 
 # ---------------------------------------------------------------------- 5. eval
+# Run the fully-trained (Manager, Answer Agent) pair on the LoCoMo test set:
+# 10 held-out conversations × ~130 QA each = 1307 questions. Metrics reported:
+# Exact-Match, token-level F1, BLEU-1, and (if `judge` reward configured) an
+# LLM-judge accuracy. Predictions land in outputs/predictions_qwen3_4b_no_openai/.
 echo "[5/6] Evaluating on LoCoMo test set (1307 QA)"
 $PY_RUN scripts/evaluate.py outputs/generated_configs/eval_h100_qwen3_4b_no_openai.yaml
 
