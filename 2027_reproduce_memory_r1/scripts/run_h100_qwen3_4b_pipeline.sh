@@ -121,6 +121,56 @@ check_hf_cache() {
 check_hf_cache "models/models--Qwen--Qwen3-4B-Instruct-2507" "Qwen/Qwen3-4B-Instruct-2507"
 check_hf_cache "models/models--intfloat--e5-small-v2" "intfloat/e5-small-v2"
 
+# Some corp environments break HF's cache-id resolution (e.g. broken symlinks after rsync,
+# or an older huggingface_hub that misreads HF_HUB_CACHE). To dodge that entirely we resolve
+# each model to its local snapshot path and hand THAT to the training scripts. Local-path
+# loads don't touch huggingface_hub at all.
+resolve_local_snapshot() {
+    local model_dir="$1"
+    # Prefer refs/main; fall back to the first (usually only) snapshot dir if refs is empty.
+    local snapshot_hash
+    snapshot_hash="$(cat "$model_dir/refs/main" 2>/dev/null || true)"
+    if [ -z "$snapshot_hash" ] || [ ! -d "$model_dir/snapshots/$snapshot_hash" ]; then
+        snapshot_hash="$(ls -1 "$model_dir/snapshots" 2>/dev/null | head -1)"
+    fi
+    if [ -z "$snapshot_hash" ]; then
+        echo ""
+        return
+    fi
+    local snapshot_path="$model_dir/snapshots/$snapshot_hash"
+    if [ ! -f "$snapshot_path/config.json" ]; then
+        echo ""
+        return
+    fi
+    # Convert to absolute path.
+    (cd "$snapshot_path" && pwd)
+}
+
+QWEN_LOCAL="$(resolve_local_snapshot "models/models--Qwen--Qwen3-4B-Instruct-2507")"
+E5_LOCAL="$(resolve_local_snapshot "models/models--intfloat--e5-small-v2")"
+if [ -z "$QWEN_LOCAL" ] || [ -z "$E5_LOCAL" ]; then
+    echo "❌ Couldn't resolve a valid local snapshot for one of the models."
+    echo "   Qwen3-4B → ${QWEN_LOCAL:-<not found>}"
+    echo "   e5-small-v2 → ${E5_LOCAL:-<not found>}"
+    echo
+    echo "   Check for broken symlinks with:"
+    echo "     ls -la models/models--intfloat--e5-small-v2/snapshots/*/"
+    echo "   If files have '?' or red text, the rsync/scp didn't preserve symlinks."
+    echo "   Re-copy from source with:  rsync -avL src:./models/ ./models/"
+    exit 2
+fi
+echo "  ↳ resolved Qwen3-4B → $QWEN_LOCAL"
+echo "  ↳ resolved e5-small-v2 → $E5_LOCAL"
+
+# Generate runtime configs where all HF repo ids are replaced with the local snapshot paths.
+# This avoids HF cache-id resolution entirely, working even when refs/ or symlinks are broken.
+GENERATED_CONFIG_DIR="outputs/generated_configs"
+mkdir -p "$GENERATED_CONFIG_DIR"
+for cfg in paper_grpo_answer_h100_qwen3_4b.yaml paper_grpo_manager_h100_qwen3_4b.yaml eval_h100_qwen3_4b_no_openai.yaml; do
+    sed "s|Qwen/Qwen3-4B-Instruct-2507|$QWEN_LOCAL|g" "configs/$cfg" > "$GENERATED_CONFIG_DIR/$cfg"
+done
+echo "  ↳ runtime configs at $GENERATED_CONFIG_DIR/ (repo ids → local paths)"
+
 # Python runner: prefer uv if installed, otherwise fall back to plain python. This lets the
 # script work both on a uv-managed box and on a corp box where uv isn't available and packages
 # are pip-installed to --user / a plain venv.
@@ -195,7 +245,7 @@ else
             --locomo data/raw/locomo/locomo10.json \
             --out data/processed/answer_train.jsonl \
             --extractor heuristic \
-            --encoder intfloat/e5-small-v2 \
+            --encoder "$E5_LOCAL" \
             --top-k-per-speaker 30
     fi
 
@@ -207,7 +257,7 @@ else
         echo "  ✓ Stage A checkpoint already at $STAGE_A_CKPT. Skipping training."
     else
         $PY_RUN scripts/train_answer_agent.py \
-            configs/paper_grpo_answer_h100_qwen3_4b.yaml
+            outputs/generated_configs/paper_grpo_answer_h100_qwen3_4b.yaml
     fi
 
     if [ "$STAGE_A_ONLY" = "true" ]; then
@@ -224,14 +274,14 @@ else
     else
         # The manager config's answer_backend.checkpoint already points at Stage A's step_200.
         $PY_RUN scripts/train_memory_manager.py \
-            configs/paper_grpo_manager_h100_qwen3_4b.yaml
+            outputs/generated_configs/paper_grpo_manager_h100_qwen3_4b.yaml
     fi
 fi
 
 # ---------------------------------------------------------------------- 5. eval
 
 echo "[5/6] Evaluating on LoCoMo test set (1307 QA)..."
-$PY_RUN scripts/evaluate.py configs/eval_h100_qwen3_4b_no_openai.yaml
+$PY_RUN scripts/evaluate.py outputs/generated_configs/eval_h100_qwen3_4b_no_openai.yaml
 
 echo
 echo "🏁 Full pipeline complete."
