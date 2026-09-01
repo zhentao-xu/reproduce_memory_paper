@@ -1,0 +1,25 @@
+# Baseline / end-to-end eval on LoCoMo with Qwen3-4B-Instruct.
+# Swap `manager_checkpoint` / `answer_checkpoint` to the base model to measure
+# the no-RL baseline (paper's "LoCoMo (RAG)" row), or to the trained step_200
+# checkpoints to measure the RL-fine-tuned system.
+
+benchmark: locomo
+data_path: data/raw/locomo/locomo10.json
+
+manager_checkpoint: outputs/checkpoints/manager_grpo_mps_qwen3_4b/step_200
+answer_checkpoint: outputs/checkpoints/answer_grpo_mps_qwen3_4b/step_200
+
+extractor_backend: openai
+extractor_model: gpt-4o-mini
+judge_model: gpt-4o-mini
+
+top_k_per_speaker: 30
+top_k_context_manager: 10
+
+use_judge: true
+dtype: bfloat16
+
+max_new_tokens_manager: 2048
+max_new_tokens_answer: 512
+
+output_dir: outputs/predictions_mps_qwen3_4b

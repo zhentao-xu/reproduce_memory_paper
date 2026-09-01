@@ -1,0 +1,66 @@
+# Mini GRPO run on Qwen3-4B — designed to actually SHOW learning (not just a smoke test).
+#
+# Key changes vs smoke config:
+#   * G=4  (more candidates per prompt → higher chance of reward variance in the group)
+#   * total_steps=5  (5 gradient updates instead of 1)
+#   * uses answer_train_filtered.jsonl (only rows where 0 < base F1 < 0.85 = learnable window)
+#   * max_response=64  (keep rollout time bounded on MPS)
+#
+# Expected wall time on M2 Max MPS: ~20-30 min.
+
+stage: answer
+run_name: mini_qwen3_4b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: Qwen/Qwen3-4B-Instruct-2507
+  dtype: bfloat16
+  use_peft: true
+  peft_r: 8
+  peft_alpha: 16
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 4       # ⇒ examples_per_step = 4/4 = 1 (cycles through 9 filtered examples).
+                            # MPS SDPA attention on 913-tok prompts OOMs at G=8. G=4 halves peak.
+  micro_batch_size_per_gpu: 1
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 4              # dropped from 8 — MPS SDPA attention allocated 122GB with G=8 on
+                             # 913-tok prompts. G=4 halves the backward-pass memory.
+  grpo_beta: 0.04
+  # Qwen3-4B is a strong instruct model — at temp=1.0 with G candidates it collapses onto one
+  # answer, giving zero intra-group variance → zero advantage → no learning. We turn up the heat
+  # and add nucleus + top-k sampling to force diverse candidates.
+  train_temperature: 1.5
+  train_top_p: 0.9
+  train_top_k: 50
+  train_repetition_penalty: 1.05
+  eval_temperature: 0.0
+  max_prompt_length: 2048
+  max_response_length: 32   # ⇓ from 128 — force the model to emit the answer immediately
+                            # (probe shows first ~5 tokens are near-deterministic; giving 128
+                            # tokens lets the model waste all "diversity budget" on a
+                            # deterministic memory echo before committing to the answer)
+  total_steps: 5
+  save_every: 5
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train_filtered.jsonl   # ← screened for signal
+  max_examples: null
+  top_k_context: 5
+  top_k_per_speaker: 10   # paper uses 30 (60 total memories); 10 here for MPS budget.
+
+reward:
+  reward_type: f1  # ⇑ from em — continuous signal gives GRPO reward variance across candidates
+                   # even when no candidate hits EM=1. Same paper's design; the paper's Table 2
+                   # ultimately picks EM for the final run, but F1 is what unblocks a small-scale
+                   # smoke run where EM=0 dominates.

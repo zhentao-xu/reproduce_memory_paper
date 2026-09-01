@@ -1,0 +1,23 @@
+# End-to-end evaluation on LoCoMo — LLaMA-3.1-8B-Instruct pipeline.
+# Points at the RL-trained step_200 checkpoints from the H100 training runs.
+
+benchmark: locomo
+data_path: data/raw/locomo/locomo10.json
+
+manager_checkpoint: outputs/checkpoints/manager_grpo_h100_llama_8b/step_200
+answer_checkpoint: outputs/checkpoints/answer_grpo_h100_llama_8b/step_200
+
+extractor_backend: openai
+extractor_model: gpt-4o-mini
+judge_model: gpt-4o-mini
+
+top_k_per_speaker: 30
+top_k_context_manager: 10
+
+use_judge: true
+dtype: bfloat16
+
+max_new_tokens_manager: 2048
+max_new_tokens_answer: 512
+
+output_dir: outputs/predictions_h100_llama_8b

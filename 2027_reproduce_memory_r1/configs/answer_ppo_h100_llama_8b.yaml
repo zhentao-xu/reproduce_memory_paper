@@ -1,0 +1,40 @@
+# Answer Agent — PPO fine-tuning with LLaMA-3.1-8B-Instruct.
+
+stage: answer
+run_name: answer_ppo_h100_llama_8b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16
+  use_peft: true
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 128
+  micro_batch_size_per_gpu: 2
+  ppo_epochs: 4
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: ppo
+  train_temperature: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096
+  max_response_length: 512
+  total_steps: 200
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  top_k_context: 10
+  top_k_per_speaker: 30
+
+reward:
+  reward_type: em

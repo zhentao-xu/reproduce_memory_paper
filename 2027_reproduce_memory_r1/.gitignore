@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.DS_Store
+
+# Large raw / processed data — keep out of git
+data/raw/
+data/processed/
+
+# Downloaded model weights (see .env → HF_HOME=./models)
+models/
+
+# Training outputs
+outputs/
+wandb/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env

@@ -1,0 +1,19 @@
+# Baseline eval: no RL fine-tuning, LLaMA-3.1-8B-Instruct out of the box (paper's "LoCoMo (RAG)" row).
+
+benchmark: locomo
+data_path: data/raw/locomo/locomo10.json
+
+manager_checkpoint: meta-llama/Llama-3.1-8B-Instruct
+answer_checkpoint: meta-llama/Llama-3.1-8B-Instruct
+
+extractor_backend: openai
+extractor_model: gpt-4o-mini
+judge_model: gpt-4o-mini
+
+top_k_per_speaker: 30
+top_k_context_manager: 10
+
+use_judge: true
+dtype: bfloat16
+
+output_dir: outputs/predictions_base_h100_llama_8b

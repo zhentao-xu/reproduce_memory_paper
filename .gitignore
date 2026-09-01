@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large data / model artifacts (too big for GitHub)
+2027_reproduce_memory_r1/data/
+2027_reproduce_memory_r1/models/
+2027_reproduce_memory_r1/logs/
+2027_reproduce_memory_r1/outputs/
+
+# Upstream MemSkill clone (has its own .git — add as submodule if needed)
+2027_reproduct_mem_skill/MemSkill/
+
+# Local scheduled task locks
+**/.claude/scheduled_tasks.lock
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp

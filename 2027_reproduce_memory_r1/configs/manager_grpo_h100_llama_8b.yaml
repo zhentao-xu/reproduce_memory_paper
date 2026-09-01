@@ -1,0 +1,60 @@
+# Memory Manager — GRPO with LLaMA-3.1-8B-Instruct on 1× H100 (80 GB).
+# Reproduces paper Table 1 "Memory-R1-GRPO" row on the LLaMA backbone.
+#
+# Memory budget on 1×H100:
+#   actor (bf16, LoRA)          ~16 GB
+#   reference model (bf16)      ~16 GB
+#   answer backend (bf16)       ~16 GB   # Manager reward uses an Answer Agent
+#   activations + KV cache      ~15 GB   # seq up to 4096+2048, group_size 8
+#   -----------------------------------
+#   total                       ~63 GB   (fits 80 GB with headroom)
+#
+# Full fine-tuning is NOT feasible on 1×H100 (needs 4×H100 per paper Appendix D).
+# All other hyperparameters match the paper exactly.
+
+stage: manager
+run_name: manager_grpo_h100_llama_8b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16
+  use_peft: true          # required on 1×H100; paper uses full FT on 4×H100
+  peft_r: 16
+  peft_alpha: 32
+
+optim:
+  actor_lr: 1.0e-6         # paper Appendix D
+  critic_lr: 1.0e-5        # unused for GRPO
+  total_batch_size: 128    # paper
+  micro_batch_size_per_gpu: 2  # paper
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 8            # G in Eq. (3), paper
+  grpo_beta: 0.04
+  train_temperature: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096
+  max_response_length: 2048
+  total_steps: 200
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  top_k_context: 10
+  top_k_per_speaker: 30
+
+reward:
+  reward_type: em          # paper Table 2: EM > J for balanced gains
+
+answer_backend:
+  name_or_path: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16
+  checkpoint: null         # optional: point to your RL-trained Answer Agent

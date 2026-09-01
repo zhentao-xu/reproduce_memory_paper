@@ -1,0 +1,45 @@
+# Smoke-test config — GRPO on Qwen3-4B-Instruct-2507. Tiny batch and 2 steps just to prove the loop
+# starts, samples, computes reward, and takes a gradient step. Not for real training.
+
+stage: answer
+run_name: smoke_qwen3_4b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: Qwen/Qwen3-4B-Instruct-2507
+  dtype: bfloat16
+  use_peft: true
+  peft_r: 8
+  peft_alpha: 16
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 4
+  micro_batch_size_per_gpu: 1
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 2
+  grpo_beta: 0.04
+  train_temperature: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 2048
+  max_response_length: 64      # very tight for a smoke run
+  total_steps: 1               # 1 step is enough to prove the loop closes
+  save_every: 1
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  max_examples: 2              # only need 2 training examples
+  top_k_context: 5
+  top_k_per_speaker: 5
+
+reward:
+  reward_type: em

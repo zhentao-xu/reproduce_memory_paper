@@ -1,0 +1,47 @@
+# Answer Agent — GRPO with LLaMA-3.1-8B-Instruct on 1× H100 (80 GB).
+# Reproduces paper Table 1 "Memory-R1-GRPO" Answer-Agent training on LLaMA.
+#
+# Answer stage does NOT need an answer backend (reward is EM vs. gold answer),
+# so peak VRAM is much lower than the Manager stage: ~40 GB.
+
+stage: answer
+run_name: answer_grpo_h100_llama_8b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16
+  use_peft: true
+  peft_r: 16
+  peft_alpha: 32
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 128
+  micro_batch_size_per_gpu: 2
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 8
+  grpo_beta: 0.04
+  train_temperature: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096
+  max_response_length: 512   # answers are short
+  total_steps: 200
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  top_k_context: 10
+  top_k_per_speaker: 30
+
+reward:
+  reward_type: em            # paper Table 2: EM > J

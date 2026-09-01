@@ -1,0 +1,44 @@
+# Answer Agent — GRPO with Qwen3-4B-Instruct.
+# Sized for a single Apple M2 Max (96 GB unified memory) with LoRA + MPS.
+
+stage: answer
+run_name: answer_grpo_mps_qwen3_4b
+output_dir: outputs/checkpoints
+log_with: none
+
+model:
+  name_or_path: Qwen/Qwen3-4B-Instruct-2507
+  dtype: bfloat16
+  use_peft: true
+  peft_r: 16
+  peft_alpha: 32
+
+optim:
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-5
+  total_batch_size: 128
+  micro_batch_size_per_gpu: 2
+  clip_range: 0.2
+  kl_coef: 0.02
+  max_grad_norm: 1.0
+
+rl:
+  algorithm: grpo
+  group_size: 8
+  grpo_beta: 0.04
+  train_temperature: 1.0
+  eval_temperature: 0.0
+  max_prompt_length: 4096
+  max_response_length: 512
+  total_steps: 200
+  save_every: 50
+  seed: 42
+
+data:
+  manager_data: data/processed/manager_train.jsonl
+  answer_data: data/processed/answer_train.jsonl
+  top_k_context: 10
+  top_k_per_speaker: 30
+
+reward:
+  reward_type: em
