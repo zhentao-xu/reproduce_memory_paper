@@ -1,55 +1,58 @@
-# Direct dependencies for Memory-R1 reproduction — unpinned so the resolver picks whatever
-# is available on your PyPI mirror. For a fully-pinned reproducible install, see
-# requirements.lock.txt (generated via `uv pip compile pyproject.toml`).
+# Top-level dependencies for Memory-R1 — pinned to versions that resolved cleanly on
+# LinkedIn's corp PyPI mirror. Transitive deps left to pip's resolver so they can float
+# to whatever the mirror has.
 #
 # Usage:
 #   pip install -r requirements.txt
+#
+# For a fully-pinned reproducible install (all 345 transitive deps), see
+# requirements.lock.txt.
 
 # Core deep learning
-torch
-transformers
-accelerate
-peft
+torch==2.13.0
+transformers==5.15.0
+accelerate==1.14.0
+peft==0.20.0
 bitsandbytes; sys_platform != "darwin"
 
-# RL fine-tuning (PPO / GRPO). trl>=0.12 has GRPOTrainer.
-trl
+# RL fine-tuning (PPO / GRPO)
+trl==1.10.0
 deepspeed; sys_platform != "darwin"
 
 # Retrieval / embeddings
-sentence-transformers
-faiss-cpu
+sentence-transformers==5.7.0
+faiss-cpu==1.13.2
 
 # Data / datasets
-datasets
-huggingface-hub
+datasets==5.0.1
+huggingface-hub==1.28.0
 
 # LLM APIs (fact extraction + LLM-as-a-Judge)
-openai
-tenacity
+openai==3.3.1
+tenacity==9.1.4
 
 # Metrics
-sacrebleu
-nltk
-rouge-score
-scikit-learn
+sacrebleu==2.6.0
+nltk==3.10.3
+rouge-score==0.1.2
+scikit-learn==1.7.2
 
 # Utilities
-pydantic
-pyyaml
+pydantic==2.13.4
+pyyaml==6.0.3
 tqdm
-numpy
-pandas
-rich
-typer
-loguru
+numpy==1.26.4
+pandas==2.3.3
+rich==15.0.0
+typer==0.27.1
+loguru==0.7.3
 
 # Experiment tracking
 wandb
 
 # Networking / robust downloads
-requests
-gdown
+requests==2.34.2
+gdown==6.1.0
 
 # Testing
 pytest
