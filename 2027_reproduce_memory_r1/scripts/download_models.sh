@@ -1,21 +1,42 @@
 #!/usr/bin/env bash
-# Download Memory-R1 models to flat local dirs, ready to rsync to an offline machine.
-# Run this on ANY box with HF Hub access (your Mac, a jump host, etc.), then rsync
-# the ./models/ folder to the offline H100.
+# =============================================================================
+#  download_models.sh — fetch the HuggingFace models Memory-R1 needs.
+# =============================================================================
 #
-# Produces:
-#   ./models/qwen3-4b/       — Qwen/Qwen3-4B-Instruct-2507 (~8 GB, flat files — no symlinks)
-#   ./models/e5-small-v2/    — intfloat/e5-small-v2 (~150 MB, flat files)
+#  Run on any box with HuggingFace Hub access (Mac laptop, jump host, ...), then
+#  `rsync` the resulting `models/` dir to the offline H100.
 #
-# Both dirs are safe to `rsync -av` (or `scp -r`) to the remote box. No HF cache
-# tree, no symlinks — just plain files that transformers/sentence-transformers
-# will load via the directory path.
+#  Model bundles (pick one via `--models`):
+#    small (DEFAULT) — the open-source-only reproduction (~8 GB):
+#        models/qwen3-4b/       Qwen/Qwen3-4B-Instruct-2507       (~8 GB)
+#        models/e5-small-v2/    intfloat/e5-small-v2              (~150 MB)
 #
-# Usage:
-#   bash scripts/download_models.sh
+#    paper — the two backbones used in the paper's Table 1 (~30 GB):
+#        models/llama-3.1-8b/   meta-llama/Llama-3.1-8B-Instruct  (~16 GB, GATED)
+#        models/qwen2.5-7b/     Qwen/Qwen2.5-7B-Instruct          (~14 GB)
+#        models/e5-small-v2/    intfloat/e5-small-v2              (~150 MB)
 #
-# Then copy to the H100:
-#   rsync -av --info=progress2 models/ user@h100:/path/to/repo/models/
+#    all — everything above (~38 GB total).
+#
+#  LLaMA-3.1-8B is a GATED model on HuggingFace. Before downloading, you must:
+#    1. Accept the LLaMA 3.1 license at
+#       https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct
+#    2. Export a token in the shell you run this from:
+#         export HUGGINGFACE_HUB_TOKEN=hf_...
+#       or run `huggingface-cli login` once.
+#
+#  Every model dir is FLAT (no HF cache tree, no symlinks) so it's safe to
+#  rsync/scp directly to any offline machine and load with
+#  `AutoModel.from_pretrained("models/<name>")`.
+#
+#  USAGE:
+#    bash scripts/download_models.sh                 # small bundle (default)
+#    bash scripts/download_models.sh --models paper  # paper Table-1 backbones
+#    bash scripts/download_models.sh --models all    # everything (~38 GB)
+#
+#  Then on your workstation:
+#    rsync -av --info=progress2 models/ user@h100:/path/to/repo/models/
+# =============================================================================
 
 set -euo pipefail
 
@@ -24,9 +45,35 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 echo "  (working dir: $REPO_ROOT)"
 
+# ---------------------------------------------------------------- args
+BUNDLE="small"
+for arg in "$@"; do
+  case "$arg" in
+    --models=*) BUNDLE="${arg#*=}" ;;
+    --models)   BUNDLE="__NEXT__" ;;
+    __NEXT__)   ;;  # placeholder — shouldn't happen
+    *)
+      # If preceding token was --models, treat this as its value.
+      if [ "$BUNDLE" = "__NEXT__" ]; then
+          BUNDLE="$arg"
+      else
+          echo "Unknown arg: $arg" >&2
+          echo "Valid: --models {small|paper|all}" >&2
+          exit 1
+      fi
+      ;;
+  esac
+done
+case "$BUNDLE" in
+  small|paper|all) ;;
+  *) echo "Unknown bundle: $BUNDLE (valid: small, paper, all)" >&2; exit 1 ;;
+esac
+echo "  → bundle: $BUNDLE"
+
 mkdir -p models
 
-# Pick a python: prefer .venv, then uv, then system python. huggingface_hub must be importable.
+# ---------------------------------------------------------------- python + hf hub
+# Prefer .venv, then uv, then system python. huggingface_hub must be importable.
 if [ -d .venv ] && [ -x .venv/bin/python ]; then
     PY=".venv/bin/python"
 elif command -v uv >/dev/null 2>&1; then
@@ -34,7 +81,6 @@ elif command -v uv >/dev/null 2>&1; then
 else
     PY="python3"
 fi
-
 echo "  using $PY"
 
 if ! $PY -c "import huggingface_hub" 2>/dev/null; then
@@ -43,6 +89,23 @@ if ! $PY -c "import huggingface_hub" 2>/dev/null; then
     exit 1
 fi
 
+# ---------------------------------------------------------------- LLaMA gating warning
+if [ "$BUNDLE" = "paper" ] || [ "$BUNDLE" = "all" ]; then
+    if [ -z "${HUGGINGFACE_HUB_TOKEN:-}${HF_TOKEN:-}" ] \
+        && ! $PY -c "from huggingface_hub import HfApi; HfApi().whoami()" >/dev/null 2>&1; then
+        echo
+        echo "⚠  LLaMA-3.1-8B is GATED and no HF token is visible in this shell."
+        echo "   Either:"
+        echo "     1. Accept the license at"
+        echo "        https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
+        echo "        then run 'huggingface-cli login' (persists the token), OR"
+        echo "     2. export HUGGINGFACE_HUB_TOKEN=hf_...  before re-running this script."
+        echo "   Aborting so you don't hit a 401 mid-download."
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------- downloader
 download_one() {
     local repo_id="$1"
     local flat_dir="$2"
@@ -69,8 +132,24 @@ print(f"  ✓ done: {p}")
 PYEOF
 }
 
-download_one "Qwen/Qwen3-4B-Instruct-2507" "models/qwen3-4b"
-download_one "intfloat/e5-small-v2"        "models/e5-small-v2"
+# ---------------------------------------------------------------- dispatch
+case "$BUNDLE" in
+  small)
+    download_one "Qwen/Qwen3-4B-Instruct-2507"     "models/qwen3-4b"
+    download_one "intfloat/e5-small-v2"            "models/e5-small-v2"
+    ;;
+  paper)
+    download_one "meta-llama/Llama-3.1-8B-Instruct" "models/llama-3.1-8b"
+    download_one "Qwen/Qwen2.5-7B-Instruct"         "models/qwen2.5-7b"
+    download_one "intfloat/e5-small-v2"             "models/e5-small-v2"
+    ;;
+  all)
+    download_one "Qwen/Qwen3-4B-Instruct-2507"      "models/qwen3-4b"
+    download_one "meta-llama/Llama-3.1-8B-Instruct" "models/llama-3.1-8b"
+    download_one "Qwen/Qwen2.5-7B-Instruct"         "models/qwen2.5-7b"
+    download_one "intfloat/e5-small-v2"             "models/e5-small-v2"
+    ;;
+esac
 
 echo
 echo "✅ Models ready under $REPO_ROOT/models/"
