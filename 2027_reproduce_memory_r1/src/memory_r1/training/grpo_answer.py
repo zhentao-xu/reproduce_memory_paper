@@ -97,6 +97,19 @@ class GRPOAnswerTrainer:
         self.model.to(self.device)
         self.ref_model.to(self.device).eval()
 
+        # On CUDA (single-GPU H100) the biggest activation cost is Q, K, V and MLP
+        # intermediates for a ~4k-token sequence × 36 layers. Gradient checkpointing
+        # trades ~30% compute for ~5-10× activation-memory reduction, which is what
+        # lets G=8 candidates fit on 80 GB. Skipped on MPS where memory is unified
+        # and the kernel path has been less battle-tested.
+        if str(self.device).startswith("cuda"):
+            if hasattr(self.model, "enable_input_require_grads"):
+                # PEFT + gradient checkpointing needs this to keep grads flowing through
+                # the frozen base params into the LoRA adapters.
+                self.model.enable_input_require_grads()
+            self.model.gradient_checkpointing_enable()
+            logger.info("🪶 gradient checkpointing enabled on actor (CUDA)")
+
         self.optim = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad], lr=cfg.optim.actor_lr, betas=(0.9, 0.95)
         )
@@ -157,8 +170,16 @@ class GRPOAnswerTrainer:
     def _step(self, prompt: str, responses: list[str], rewards: list[float]) -> dict[str, float]:
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         adv = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-6)
-        losses, kls = [], []
+        G = len(responses)
+
+        # Per-candidate backward: previously we appended each candidate's loss to a list and
+        # only did one backward at the end, which kept ALL G candidates' activation graphs
+        # alive simultaneously (~G× the peak memory). Now we backward each candidate right
+        # away and free its graph. Loss scaled by 1/G so accumulated grads == the mean-loss
+        # backward that the batched version would have computed.
         self.model.train()
+        self.optim.zero_grad()
+        loss_sum, kl_sum = 0.0, 0.0
         for resp, a in zip(responses, adv, strict=True):
             new_lp, _ = _response_logprobs(self.model, self.tokenizer, prompt, resp, self.device)
             with torch.no_grad():
@@ -168,18 +189,17 @@ class GRPOAnswerTrainer:
             clipped = ratio.clamp(1 - self.cfg.optim.clip_range, 1 + self.cfg.optim.clip_range) * a
             pol = -torch.min(unclipped, clipped).mean()
             kl = (new_lp.exp() * (new_lp - old_lp)).mean()
-            losses.append(pol + self.cfg.rl.grpo_beta * kl)
-            kls.append(kl.detach())
+            loss_i = (pol + self.cfg.rl.grpo_beta * kl) / G
+            loss_i.backward()
+            loss_sum += float(loss_i.item()) * G  # log the un-scaled mean loss
+            kl_sum += float(kl.item())
 
-        loss = torch.stack(losses).mean()
-        self.optim.zero_grad()
-        loss.backward()
         grad = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.optim.max_grad_norm)
         self.optim.step()
         self.scheduler.step()
         return {
-            "loss": float(loss.item()),
-            "kl": float(torch.stack(kls).mean().item()),
+            "loss": loss_sum / G,
+            "kl": kl_sum / G,
             "grad_norm": float(grad),
             "reward_mean": float(rewards_t.mean().item()),
             "reward_std": float(rewards_t.std().item()),

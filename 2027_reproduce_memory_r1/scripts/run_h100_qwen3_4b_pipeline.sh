@@ -70,6 +70,10 @@ export HF_HUB_CACHE="${HF_HUB_CACHE:-$REPO_ROOT/models}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$REPO_ROOT/models}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$REPO_ROOT/models}"
 export PYTHONUNBUFFERED=1
+# Reduce CUDA allocator fragmentation. With G=8 candidates × ~4k-token sequences, each step
+# frees and re-allocates large activation buffers; expandable_segments lets the allocator
+# grow blocks instead of failing at first non-contiguous free.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # ---------------------------------------------------------------------- resolve model paths
 # The config YAMLs shipped with the repo use HuggingFace repo IDs like
