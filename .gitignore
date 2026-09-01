@@ -26,6 +26,18 @@ env/
 2027_reproduce_memory_r1/logs/
 2027_reproduce_memory_r1/outputs/
 
+# ...but whitelist the small raw benchmark files so the repo is self-contained.
+# LoCoMo (~2.7 MB): CC BY-NC 4.0, safe to redistribute for research.
+!2027_reproduce_memory_r1/data/
+!2027_reproduce_memory_r1/data/raw/
+!2027_reproduce_memory_r1/data/raw/locomo/
+!2027_reproduce_memory_r1/data/raw/locomo/locomo10.json
+# LongMemEval oracle (~15 MB): safe. The larger _s (265 MB) and _m (2.5 GB) splits exceed
+# GitHub's 100 MB per-file limit — download via `scripts/download_datasets.py`.
+!2027_reproduce_memory_r1/data/raw/longmemeval/
+!2027_reproduce_memory_r1/data/raw/longmemeval/longmemeval_oracle.json
+!2027_reproduce_memory_r1/data/raw/longmemeval/README.md
+
 # Upstream MemSkill clone (has its own .git — add as submodule if needed)
 2027_reproduct_mem_skill/MemSkill/
 

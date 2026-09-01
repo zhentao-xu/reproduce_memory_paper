@@ -5,9 +5,23 @@ __pycache__/
 *.egg-info/
 .DS_Store
 
-# Large raw / processed data — keep out of git
-data/raw/
+# Large raw / processed data — keep out of git.
+# Use `data/raw/*` (not `data/raw/`) so negations below can re-include specific files.
+data/raw/*
 data/processed/
+
+# ...but whitelist small benchmark files so the repo is self-contained.
+# LoCoMo (~2.7 MB): CC BY-NC 4.0 licensed, safe to redistribute for research.
+!data/raw/locomo/
+data/raw/locomo/*
+!data/raw/locomo/locomo10.json
+
+# LongMemEval oracle split (~15 MB): safe. The larger _s (265 MB) and _m (2.5 GB) splits
+# exceed GitHub's 100 MB per-file limit — download via `scripts/download_datasets.py`.
+!data/raw/longmemeval/
+data/raw/longmemeval/*
+!data/raw/longmemeval/longmemeval_oracle.json
+!data/raw/longmemeval/README.md
 
 # Downloaded model weights (see .env → HF_HOME=./models)
 models/
@@ -15,6 +29,7 @@ models/
 # Training outputs
 outputs/
 wandb/
+logs/
 
 # Editor / IDE
 .vscode/
