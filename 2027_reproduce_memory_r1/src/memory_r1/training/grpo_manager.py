@@ -396,6 +396,11 @@ class GRPOManagerTrainer:
                 for ci, r in enumerate(rewards):
                     logger.debug("🎯 candidate {} reward={:.3f}", ci + 1, r)
 
+                # Release sampling KV-cache blocks so _grpo_step can allocate its own
+                # activation buffers contiguously. See grpo_answer.py for the full rationale.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
                 stats = self._grpo_step(prompt, responses, rewards)
                 for k, v in stats.items():
                     step_stats.setdefault(k, 0.0)

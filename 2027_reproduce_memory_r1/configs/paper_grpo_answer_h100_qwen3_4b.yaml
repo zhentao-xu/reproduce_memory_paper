@@ -20,7 +20,7 @@ optim:
   actor_lr: 1.0e-6          # paper Appendix D
   critic_lr: 1.0e-5         # (unused for GRPO)
   total_batch_size: 256     # ⇑ from paper 128 to keep examples/step=16 after G doubled to 16
-  micro_batch_size_per_gpu: 8
+  micro_batch_size_per_gpu: 4
   ppo_epochs: 4
   clip_range: 0.2
   kl_coef: 0.02

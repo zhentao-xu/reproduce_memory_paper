@@ -293,6 +293,14 @@ class GRPOAnswerTrainer:
                     logger.debug("🎯 candidate {} reward={:.3f} len={} pred={!r}",
                                  ci + 1, r, len(resp), resp.replace("\n", " "))
 
+                # Release the KV-cache blocks allocated during sampling before we ask the
+                # allocator for the actor+ref forward buffers. Without this call PyTorch's
+                # caching allocator can hold hundreds of MB in "reserved-but-unallocated"
+                # blocks that fragment away from what _step needs contiguously, causing OOM
+                # even though the total footprint would otherwise fit.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
                 s = self._step(prompt, responses, rewards)
                 for k, v in s.items():
                     step_stats.setdefault(k, 0.0)
