@@ -41,10 +41,10 @@ data:
   manager_data: data/processed/manager_train.jsonl
   answer_data: data/processed/answer_train.jsonl
   top_k_context: 10          # Manager sees this many old-memory entries per rollout
-  top_k_per_speaker: 30      # Answer Agent (used inside Manager's reward) retrieves this many
+  top_k_per_speaker: 15      # Answer Agent (used inside Manager's reward) retrieves this many
 
 reward:
-  reward_type: em
+  reward_type: f1  
 
 answer_backend:
   # For faithful reproduction, first train the Answer Agent, then point ``checkpoint`` at that

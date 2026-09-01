@@ -11,7 +11,7 @@ extractor_backend: openai
 extractor_model: gpt-4o-mini
 judge_model: gpt-4o-mini
 
-top_k_per_speaker: 30
+top_k_per_speaker: 15
 top_k_context_manager: 10
 
 use_judge: true

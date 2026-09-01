@@ -45,12 +45,12 @@ rl:
 data:
   manager_data: data/processed/manager_train.jsonl
   answer_data: data/processed/answer_train.jsonl
-  # top-30 per speaker (60 total memories) — paper's exact retrieval budget.
+  # top-15 per speaker (30 total memories) — ⇓ from paper's 30/60 to fit tighter context budgets
   top_k_context: 10
-  top_k_per_speaker: 30
+  top_k_per_speaker: 15
 
 reward:
-  reward_type: em           # paper Table 2: EM > J across F1/B1
+  reward_type: f1           # ⇓ from em: continuous signal, denser gradient in early rollouts
 
 answer_backend:
   name_or_path: Qwen/Qwen2.5-7B-Instruct

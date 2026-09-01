@@ -49,10 +49,10 @@ data:
   manager_data: data/processed/manager_train.jsonl
   answer_data: data/processed/answer_train.jsonl
   top_k_context: 10
-  top_k_per_speaker: 30
+  top_k_per_speaker: 15
 
 reward:
-  reward_type: em          # paper Table 2: EM > J for balanced gains
+  reward_type: f1           # ⇓ from em: continuous signal, denser gradient in early rollouts
 
 answer_backend:
   name_or_path: meta-llama/Llama-3.1-8B-Instruct

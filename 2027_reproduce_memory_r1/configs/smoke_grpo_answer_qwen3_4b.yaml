@@ -42,4 +42,4 @@ data:
   top_k_per_speaker: 5
 
 reward:
-  reward_type: em
+  reward_type: f1  

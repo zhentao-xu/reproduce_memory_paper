@@ -40,10 +40,10 @@ data:
   manager_data: data/processed/manager_train.jsonl
   answer_data: data/processed/answer_train.jsonl
   top_k_context: 10
-  top_k_per_speaker: 30
+  top_k_per_speaker: 15
 
 reward:
-  reward_type: em
+  reward_type: f1  
 
 answer_backend:
   name_or_path: Qwen/Qwen2.5-7B-Instruct
