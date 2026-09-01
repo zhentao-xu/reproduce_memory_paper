@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedul
 
 from memory_r1.prompts.answer import ANSWER_AGENT_SYSTEM, build_answer_prompt
 from memory_r1.training.config import TrainerConfig
-from memory_r1.training.grpo_manager import _cyclic, _response_logprobs
+from memory_r1.training.grpo_manager import _cyclic, _response_logprobs, _response_logprobs_batch
 from memory_r1.training.reward_pipeline import AnswerTrainSample, score_answer_batch
 from memory_r1.training.rollout import build_chat_prompt
 from memory_r1.utils import logger, resolve_attn_impl, resolve_device, resolve_dtype
@@ -171,28 +171,44 @@ class GRPOAnswerTrainer:
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         adv = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-6)
         G = len(responses)
+        # Batch µ candidates through one forward pass, then backward. Each microbatch's graph is
+        # freed as soon as its backward completes — so peak activation memory scales with µ, not G.
+        # Config knob ``optim.micro_batch_size_per_gpu`` controls µ. Loss inside each backward is
+        # scaled by 1/G so summed grads across all microbatches equal the mean-over-G loss backward
+        # the naive implementation would produce.
+        micro = max(1, min(G, int(self.cfg.optim.micro_batch_size_per_gpu)))
 
-        # Per-candidate backward: previously we appended each candidate's loss to a list and
-        # only did one backward at the end, which kept ALL G candidates' activation graphs
-        # alive simultaneously (~G× the peak memory). Now we backward each candidate right
-        # away and free its graph. Loss scaled by 1/G so accumulated grads == the mean-loss
-        # backward that the batched version would have computed.
         self.model.train()
         self.optim.zero_grad()
         loss_sum, kl_sum = 0.0, 0.0
-        for resp, a in zip(responses, adv, strict=True):
-            new_lp, _ = _response_logprobs(self.model, self.tokenizer, prompt, resp, self.device)
+        for start in range(0, G, micro):
+            end = min(G, start + micro)
+            batch_resps = responses[start:end]
+            batch_adv = adv[start:end].unsqueeze(1)  # (b, 1) — broadcast over token dim
+
+            new_lp, resp_mask = _response_logprobs_batch(
+                self.model, self.tokenizer, prompt, batch_resps, self.device
+            )
             with torch.no_grad():
-                old_lp, _ = _response_logprobs(self.ref_model, self.tokenizer, prompt, resp, self.device)
+                old_lp, _ = _response_logprobs_batch(
+                    self.ref_model, self.tokenizer, prompt, batch_resps, self.device
+                )
+
             ratio = torch.exp(new_lp - old_lp).clamp(max=10.0)
-            unclipped = ratio * a
-            clipped = ratio.clamp(1 - self.cfg.optim.clip_range, 1 + self.cfg.optim.clip_range) * a
-            pol = -torch.min(unclipped, clipped).mean()
-            kl = (new_lp.exp() * (new_lp - old_lp)).mean()
-            loss_i = (pol + self.cfg.rl.grpo_beta * kl) / G
+            unclipped = ratio * batch_adv
+            clipped = ratio.clamp(1 - self.cfg.optim.clip_range, 1 + self.cfg.optim.clip_range) * batch_adv
+            pol_per_tok = -torch.min(unclipped, clipped) * resp_mask  # zero out pad positions
+            kl_per_tok = (new_lp.exp() * (new_lp - old_lp)) * resp_mask
+            tok_counts = resp_mask.sum(dim=1).clamp(min=1)  # (b,) — real tokens per candidate
+            pol = pol_per_tok.sum(dim=1) / tok_counts  # (b,)
+            kl = kl_per_tok.sum(dim=1) / tok_counts  # (b,)
+
+            # Sum-per-candidate then divide by G → after all microbatches, total grads correspond
+            # to the mean-over-G loss the original code produced.
+            loss_i = ((pol + self.cfg.rl.grpo_beta * kl) / G).sum()
             loss_i.backward()
-            loss_sum += float(loss_i.item()) * G  # log the un-scaled mean loss
-            kl_sum += float(kl.item())
+            loss_sum += float(loss_i.item()) * G
+            kl_sum += float(kl.sum().item())
 
         grad = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.optim.max_grad_norm)
         self.optim.step()
