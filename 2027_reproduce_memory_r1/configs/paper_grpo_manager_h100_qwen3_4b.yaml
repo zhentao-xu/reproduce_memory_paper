@@ -19,14 +19,14 @@ optim:
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
   total_batch_size: 128
-  micro_batch_size_per_gpu: 4
+  micro_batch_size_per_gpu: 8
   clip_range: 0.2
   kl_coef: 0.02
   max_grad_norm: 1.0
 
 rl:
   algorithm: grpo
-  group_size: 8
+  group_size: 16            # ⇑ from paper 8 for more reward variance per group
   grpo_beta: 0.04
   train_temperature: 1.2
   train_top_p: 0.95
